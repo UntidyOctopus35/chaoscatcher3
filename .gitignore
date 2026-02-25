@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+
+# Packaging/build artifacts
+*.egg-info/
+dist/
+build/
+
+# OS/editor stuff
+.DS_Store
+Thumbs.db
+*.swp
+
+# ChaosCatcher local data (paranoia guard)
+*.json
+data/
