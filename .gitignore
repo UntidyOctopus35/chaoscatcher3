@@ -21,3 +21,6 @@ Thumbs.db
 # ChaosCatcher local data (paranoia guard)
 *.json
 data/
+
+# Packaging/build artifacts
+*.egg-info/
