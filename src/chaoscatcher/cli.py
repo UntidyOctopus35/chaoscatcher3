@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import os
 import stat
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from .paths import resolve_data_path
@@ -100,7 +100,6 @@ def _dt_from_entry_ts(ts: str) -> datetime | None:
 # -------------------------
 
 def _fmt_time(dt: datetime) -> str:
-    # %-I is not supported on Windows; but you're on Linux so it's fine.
     try:
         return dt.strftime("%-I:%M %p")
     except ValueError:
@@ -131,8 +130,54 @@ def _print_med_block(entry: dict[str, Any]) -> None:
     print("```")
 
 
+def _print_mood_block(entry: dict[str, Any]) -> None:
+    dt = _dt_from_entry_ts(str(entry.get("ts", "")))
+    if dt:
+        d = dt.date().isoformat()
+        t = _fmt_time(dt)
+    else:
+        d = "unknown-date"
+        t = "unknown-time"
+
+    score = entry.get("score", None)
+    notes = str(entry.get("notes", "")).strip()
+    tags = entry.get("tags", [])
+
+    print("```")
+    print("📒 Mood Log")
+    print(f"- 📅 Date: {d}")
+    print(f"- 🕒 Time: {t}")
+    print(f"- 🙂 Mood (1–10): {score}")
+    if tags:
+        print(f"- 🏷️ Tags: {', '.join(tags)}")
+    if notes:
+        print(f"- 📝 Notes: {notes}")
+    print("```")
+
+
+def _parse_tags(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    # allow comma OR space separated
+    parts = []
+    for chunk in raw.replace(",", " ").split():
+        c = chunk.strip()
+        if c:
+            parts.append(c)
+    # de-dupe while preserving order
+    seen = set()
+    out = []
+    for p in parts:
+        key = p.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
 # -------------------------
-# Commands
+# MED commands
 # -------------------------
 
 def cmd_med_add(args: argparse.Namespace) -> None:
@@ -219,8 +264,6 @@ def cmd_med_stats(args: argparse.Namespace) -> None:
         print("No medication entries yet.")
         return
 
-    from datetime import timedelta
-
     now = _now_local()
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=args.days - 1)
 
@@ -252,12 +295,188 @@ def cmd_med_stats(args: argparse.Namespace) -> None:
         print(f"- {label}: {c}")
 
 
+# -------------------------
+# MOOD commands
+# -------------------------
+
+def cmd_mood_add(args: argparse.Namespace) -> None:
+    if not (1 <= args.score <= 10):
+        raise SystemExit("--score must be between 1 and 10")
+
+    data = load_json(args.data_path)
+    moods = data.setdefault("moods", [])
+
+    ts = _parse_ts(args.time)
+    entry: dict[str, Any] = {"ts": ts, "score": int(args.score)}
+
+    if args.notes:
+        entry["notes"] = args.notes
+
+    tags = _parse_tags(args.tags)
+    if tags:
+        entry["tags"] = tags
+
+    moods.append(entry)
+    save_json(args.data_path, data)
+
+    if args.format == "block":
+        _print_mood_block(entry)
+    else:
+        print(f"🙂 Logged mood {entry['score']}/10 @ {entry['ts']}")
+
+
+def cmd_mood_list(args: argparse.Namespace) -> None:
+    data = load_json(args.data_path)
+    moods = data.get("moods", [])
+
+    if not moods:
+        print("No mood entries yet.")
+        return
+
+    moods_sorted = list(reversed(moods))  # newest first
+
+    if args.format == "block":
+        for m in moods_sorted[: args.limit]:
+            _print_mood_block(m)
+        return
+
+    print("=== Mood Log (newest first) ===")
+    for m in moods_sorted[: args.limit]:
+        ts = str(m.get("ts", ""))
+        score = m.get("score", "")
+        notes = m.get("notes")
+        tags = m.get("tags", [])
+        line = f"{ts} — {score}/10"
+        if tags:
+            line += f" [{', '.join(tags)}]"
+        if notes:
+            line += f" ({notes})"
+        print(line)
+
+
+def cmd_mood_today(args: argparse.Namespace) -> None:
+    data = load_json(args.data_path)
+    moods = data.get("moods", [])
+
+    if not moods:
+        print("No mood entries yet.")
+        return
+
+    today = _now_local().date()
+    todays: list[dict[str, Any]] = []
+
+    for m in moods:
+        dt = _dt_from_entry_ts(str(m.get("ts", "")))
+        if dt and dt.date() == today:
+            todays.append(m)
+
+    if not todays:
+        print("No mood entries logged today.")
+        return
+
+    todays_sorted = list(reversed(todays))  # newest first
+
+    if args.format == "block":
+        for m in todays_sorted[: args.limit]:
+            _print_mood_block(m)
+        return
+
+    print(f"=== Mood Log (today: {today.isoformat()}) ===")
+    for m in todays_sorted[: args.limit]:
+        dt = _dt_from_entry_ts(str(m.get("ts", "")))
+        t = _fmt_time(dt) if dt else ""
+        tags = m.get("tags", [])
+        line = f"{t} — {m.get('score','')}/10"
+        if tags:
+            line += f" [{', '.join(tags)}]"
+        print(line)
+
+
+def cmd_mood_stats(args: argparse.Namespace) -> None:
+    data = load_json(args.data_path)
+    moods = data.get("moods", [])
+
+    if not moods:
+        print("No mood entries yet.")
+        return
+
+    now = _now_local()
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=args.days - 1)
+
+    recent: list[tuple[datetime, dict[str, Any]]] = []
+    for m in moods:
+        dt = _dt_from_entry_ts(str(m.get("ts", "")))
+        if not dt or dt < cutoff:
+            continue
+        recent.append((dt, m))
+
+    if not recent:
+        print(f"No mood entries found in last {args.days} days.")
+        return
+
+    scores = [int(m.get("score", 0)) for _, m in recent if isinstance(m.get("score"), int) or str(m.get("score", "")).isdigit()]
+    scores = [s for s in scores if 1 <= s <= 10]
+
+    if not scores:
+        print(f"No valid mood scores found in last {args.days} days.")
+        return
+
+    avg = sum(scores) / len(scores)
+    mn = min(scores)
+    mx = max(scores)
+
+    # daily average
+    by_day: dict[str, list[int]] = {}
+    tag_counts: dict[str, int] = {}
+    for dt, m in recent:
+        day = dt.date().isoformat()
+        s = int(m.get("score", 0))
+        if 1 <= s <= 10:
+            by_day.setdefault(day, []).append(s)
+
+        for t in m.get("tags", []) or []:
+            tag_counts[str(t)] = tag_counts.get(str(t), 0) + 1
+
+    day_avgs = [(d, sum(v) / len(v)) for d, v in by_day.items() if v]
+    best_day = max(day_avgs, key=lambda x: x[1]) if day_avgs else None
+    worst_day = min(day_avgs, key=lambda x: x[1]) if day_avgs else None
+
+    dist: dict[int, int] = {i: 0 for i in range(1, 11)}
+    for s in scores:
+        dist[s] += 1
+
+    print(f"=== Mood Stats (last {args.days} days, since {cutoff.date().isoformat()}) ===")
+    print(f"- entries: {len(scores)}")
+    print(f"- average: {avg:.2f}/10")
+    print(f"- min/max: {mn}/10 … {mx}/10")
+
+    if best_day:
+        print(f"- best day (avg): {best_day[0]} = {best_day[1]:.2f}/10")
+    if worst_day:
+        print(f"- worst day (avg): {worst_day[0]} = {worst_day[1]:.2f}/10")
+
+    print("\n[Score distribution]")
+    for i in range(1, 11):
+        bar = "▇" * min(dist[i], 30)
+        print(f"{i:>2}: {dist[i]:>3} {bar}")
+
+    if tag_counts:
+        print("\n[Top tags]")
+        top = sorted(tag_counts.items(), key=lambda x: -x[1])[:10]
+        for t, c in top:
+            print(f"- {t}: {c}")
+
+
+# -------------------------
+# Core commands
+# -------------------------
+
 def cmd_init(args: argparse.Namespace) -> None:
     data = load_json(args.data_path)
     data.setdefault("daily_logs", {})
-    data.setdefault("moods", [])
     data.setdefault("water", [])
-    data.setdefault("medications", [])  # med-only build
+    data.setdefault("medications", [])
+    data.setdefault("moods", [])
     save_json(args.data_path, data)
     print(f"✅ Initialized data file: {args.data_path}")
 
@@ -307,15 +526,43 @@ def cmd_summary(args: argparse.Namespace) -> None:
     print("[DATA PATH]")
     print(args.data_path, "\n")
 
-    print("[DAILY LOGS – last 7 days]")
-    logs = data.get("daily_logs", {})
-    if not logs:
-        print("No dated entries yet.")
-        return
+    print("[MOOD – last 7 days]")
+    moods = data.get("moods", [])
+    if moods:
+        # quick daily avg last 7 days
+        by_day: dict[str, list[int]] = {}
+        for m in moods:
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            if not dt:
+                continue
+            day = dt.date().isoformat()
+            s = m.get("score")
+            if isinstance(s, int) and 1 <= s <= 10:
+                by_day.setdefault(day, []).append(s)
 
-    keys = sorted(logs.keys())[-7:]
-    for k in keys:
-        print(f"- {k}: {logs[k]}")
+        days = sorted(by_day.keys())[-7:]
+        for d in days:
+            vals = by_day[d]
+            avg = sum(vals) / len(vals)
+            print(f"- {d}: {avg:.2f}/10 ({len(vals)} entries)")
+    else:
+        print("No mood entries yet.")
+
+    print("\n[MEDICATION – today]")
+    meds = data.get("medications", [])
+    today = _now_local().date().isoformat()
+    todays = []
+    for m in meds:
+        dt = _dt_from_entry_ts(str(m.get("ts", "")))
+        if dt and dt.date().isoformat() == today:
+            todays.append(m)
+    if todays:
+        for m in reversed(todays):
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            t = _fmt_time(dt) if dt else ""
+            print(f"- {t}: {m.get('name','')} {m.get('dose','')}")
+    else:
+        print("No meds logged today.")
 
 
 def main(argv=None) -> None:
@@ -330,7 +577,7 @@ def main(argv=None) -> None:
     sub.add_parser("where", help="Show which data file is active and why").set_defaults(func=cmd_where)
     sub.add_parser("doctor", help="Run safety + health checks").set_defaults(func=cmd_doctor)
 
-    # med commands
+    # ---- med ----
     med = sub.add_parser("med", help="Medication logging")
     med_sub = med.add_subparsers(dest="med_cmd", required=True)
 
@@ -355,6 +602,32 @@ def main(argv=None) -> None:
     med_stats = med_sub.add_parser("stats", help="Basic stats for recent medication logs")
     med_stats.add_argument("--days", type=int, default=14, help="Lookback window (days)")
     med_stats.set_defaults(func=cmd_med_stats)
+
+    # ---- mood ----
+    mood = sub.add_parser("mood", help="Mood tracking + analysis")
+    mood_sub = mood.add_subparsers(dest="mood_cmd", required=True)
+
+    mood_add = mood_sub.add_parser("add", help="Add mood entry (1–10)")
+    mood_add.add_argument("--score", type=int, required=True, help="Mood score 1–10")
+    mood_add.add_argument("--time", default=None, help="ISO or human time (e.g. 7:34am)")
+    mood_add.add_argument("--notes", default=None)
+    mood_add.add_argument("--tags", default=None, help="Comma or space-separated tags (e.g. vyvanse,school)")
+    mood_add.add_argument("--format", choices=["line", "block"], default="line")
+    mood_add.set_defaults(func=cmd_mood_add)
+
+    mood_list = mood_sub.add_parser("list", help="List mood entries")
+    mood_list.add_argument("--limit", type=int, default=50)
+    mood_list.add_argument("--format", choices=["line", "block"], default="line")
+    mood_list.set_defaults(func=cmd_mood_list)
+
+    mood_today = mood_sub.add_parser("today", help="List today's mood entries")
+    mood_today.add_argument("--limit", type=int, default=50)
+    mood_today.add_argument("--format", choices=["line", "block"], default="line")
+    mood_today.set_defaults(func=cmd_mood_today)
+
+    mood_stats = mood_sub.add_parser("stats", help="Mood stats for recent entries")
+    mood_stats.add_argument("--days", type=int, default=14, help="Lookback window (days)")
+    mood_stats.set_defaults(func=cmd_mood_stats)
 
     args = p.parse_args(argv)
     args.data_arg = args.data
