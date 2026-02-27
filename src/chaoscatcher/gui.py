@@ -209,7 +209,7 @@ class ChaosCatcherApp(tk.Tk):
         self.store = store
 
         self._graph_redraw_job: str | None = None
-
+        self._graph_tooltip = None
         self._build_header()
         self._build_tabs()
         self._refresh_all_lists()
@@ -955,7 +955,12 @@ class ChaosCatcherApp(tk.Tk):
             out[i] = running / window
         return out
 
-    def _compute_baseline(self, series: list[tuple[datetime, float]], baseline_days: int = 30, exclude_recent_days: int = 3) -> float | None:
+    def _compute_baseline(
+        self,
+        series: list[tuple[datetime, float]],
+        baseline_days: int = 30,
+        exclude_recent_days: int = 3,
+    ) -> float | None:
         """
         Baseline = average of daily averages over baseline_days, excluding most recent exclude_recent_days.
         Returns None if insufficient data.
@@ -1042,7 +1047,8 @@ class ChaosCatcherApp(tk.Tk):
             drop = vals[i - 1] - vals[i]
             if drop >= crash_drop_day:
                 crash_hits.append(
-                    f"- Day-to-day drop ≥ {crash_drop_day:.1f}: {days[i-1].date().isoformat()} ({vals[i-1]:.1f}) → {days[i].date().isoformat()} ({vals[i]:.1f}) [drop {drop:.1f}]"
+                    f"- Day-to-day drop ≥ {crash_drop_day:.1f}: {days[i-1].date().isoformat()} ({vals[i-1]:.1f}) → "
+                    f"{days[i].date().isoformat()} ({vals[i]:.1f}) [drop {drop:.1f}]"
                 )
 
         for i in range(5, len(vals)):
@@ -1053,7 +1059,8 @@ class ChaosCatcherApp(tk.Tk):
             drop = a_prev - a_now
             if drop >= crash_drop_3day:
                 crash_hits.append(
-                    f"- 3-day avg drop ≥ {crash_drop_3day:.1f}: {days[i-3].date().isoformat()} (avg {a_prev:.2f}) → {days[i].date().isoformat()} (avg {a_now:.2f}) [drop {drop:.2f}]"
+                    f"- 3-day avg drop ≥ {crash_drop_3day:.1f}: {days[i-3].date().isoformat()} (avg {a_prev:.2f}) → "
+                    f"{days[i].date().isoformat()} (avg {a_now:.2f}) [drop {drop:.2f}]"
                 )
 
         for i in range(len(vals) - 2):
@@ -1089,6 +1096,45 @@ class ChaosCatcherApp(tk.Tk):
                 pass
         self._graph_redraw_job = self.after(120, self._draw_mood_graph)
 
+    # -------- Graph tooltip helpers --------
+
+    def _graph_show_tooltip(self, event, text: str) -> None:
+        canvas = self.graph_canvas
+
+        self._graph_hide_tooltip()
+
+        x = event.x + 10
+        y = max(5, event.y - 10)
+
+        self._graph_tooltip = canvas.create_text(
+            x,
+            y,
+            text=text,
+            anchor="nw",
+            fill="#111",
+            font=("TkDefaultFont", 9),
+            tags="tooltip",
+        )
+
+        bbox = canvas.bbox(self._graph_tooltip)
+        if bbox:
+            rect = canvas.create_rectangle(
+                bbox[0] - 6,
+                bbox[1] - 4,
+                bbox[2] + 6,
+                bbox[3] + 4,
+                fill="#ffffe0",
+                outline="#999",
+                tags="tooltip_bg",
+            )
+            canvas.tag_lower(rect, self._graph_tooltip)
+
+    def _graph_hide_tooltip(self, _event=None) -> None:
+        canvas = self.graph_canvas
+        canvas.delete("tooltip")
+        canvas.delete("tooltip_bg")
+        self._graph_tooltip = None
+
     def _draw_mood_graph(self) -> None:
         if not hasattr(self, "graph_canvas") or not hasattr(self, "graph_days"):
             return
@@ -1112,11 +1158,12 @@ class ChaosCatcherApp(tk.Tk):
                 by_day.setdefault(dt.date().isoformat(), []).append(score)
 
         days_sorted = sorted(by_day.keys())
-        daily_avgs: list[tuple[str, float]] = []
+        daily_avgs: list[tuple[str, float, int, int, int]] = []
         for d in days_sorted:
             vals = by_day[d]
             if vals:
-                daily_avgs.append((d, sum(vals) / len(vals)))
+                avg = sum(vals) / len(vals)
+                daily_avgs.append((d, avg, len(vals), min(vals), max(vals)))
 
         w = max(1, canvas.winfo_width())
         h = max(1, canvas.winfo_height())
@@ -1129,7 +1176,7 @@ class ChaosCatcherApp(tk.Tk):
             canvas.create_text(w // 2, h // 2, text="No mood data", fill="#666")
             return
 
-        values = [avg for _, avg in daily_avgs]
+        values = [avg for _, avg, _, _, _ in daily_avgs]
         xs = list(range(len(values)))
         slope = _linear_regression_slope([float(x) for x in xs], [float(y) for y in values])
 
@@ -1175,18 +1222,45 @@ class ChaosCatcherApp(tk.Tk):
             return MOOD_LINE_GREEN
 
         if len(values) == 1:
+            day, v, count, vmin_day, vmax_day = daily_avgs[0]
             x0 = x_for(0)
-            y0 = y_for(values[0])
-            canvas.create_oval(x0 - 3, y0 - 3, x0 + 3, y0 + 3, outline="", fill=zone_color(values[0]))
+            y0 = y_for(v)
+
+            dot = canvas.create_oval(
+                x0 - 3, y0 - 3, x0 + 3, y0 + 3,
+                outline="",
+                fill=zone_color(v),
+            )
+
+            tooltip_text = (
+                f"{day}\n"
+                f"Avg: {v:.2f}/10\n"
+                f"Entries: {count}\n"
+                f"Min/Max: {vmin_day}/{vmax_day}"
+            )
+
+            canvas.tag_bind(dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t))
+            canvas.tag_bind(dot, "<Leave>", self._graph_hide_tooltip)
+
         else:
-            for i in range(len(values) - 1):
-                v1, v2 = values[i], values[i + 1]
-                x1, y1 = x_for(i), y_for(v1)
-                x2, y2 = x_for(i + 1), y_for(v2)
-                canvas.create_line(x1, y1, x2, y2, width=2, fill=zone_color((v1 + v2) / 2.0))
-            for i, v in enumerate(values):
+            for i, (day, v, count, vmin_day, vmax_day) in enumerate(daily_avgs):
                 x, y = x_for(i), y_for(v)
-                canvas.create_oval(x - 3, y - 3, x + 3, y + 3, outline="", fill=zone_color(v))
+
+                dot = canvas.create_oval(
+                    x - 3, y - 3, x + 3, y + 3,
+                    outline="",
+                    fill=zone_color(v),
+                )
+
+                tooltip_text = (
+                    f"{day}\n"
+                    f"Avg: {v:.2f}/10\n"
+                    f"Entries: {count}\n"
+                    f"Min/Max: {vmin_day}/{vmax_day}"
+                )
+
+                canvas.tag_bind(dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t))
+                canvas.tag_bind(dot, "<Leave>", self._graph_hide_tooltip)
 
         first_day = daily_avgs[0][0]
         last_day = daily_avgs[-1][0]
@@ -1201,8 +1275,6 @@ class ChaosCatcherApp(tk.Tk):
             else:
                 trend_txt = "Trend: ~flat"
             canvas.create_text(w - pad_r, pad_t, text=trend_txt, anchor="ne", fill="#666")
-
-
 # -------------------------
 # GUI Entrypoint
 # -------------------------
