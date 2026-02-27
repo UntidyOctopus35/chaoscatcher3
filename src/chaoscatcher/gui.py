@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import os
+import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -11,16 +13,17 @@ from .safety import assert_safe_data_path
 from .storage import load_json, save_json
 from .timeparse import parse_ts
 
+# -------------------------
+# Shared helpers (module-level)
+# -------------------------
 
-# -------------------------
-# Shared helpers
-# -------------------------
 
 def _now_local() -> datetime:
     return datetime.now().astimezone()
 
 
 def _fmt_time(dt: datetime) -> str:
+    # Windows-safe formatting
     try:
         return dt.strftime("%-I:%M %p")
     except ValueError:
@@ -83,17 +86,14 @@ def _parse_ts(value: str | None) -> str:
 
     return dt.astimezone().isoformat(timespec="seconds")
 
+
 def _default_daily_med_list() -> list[dict[str, str]]:
-    """
-    Default daily meds template.
-    Edit this list in code OR use the GUI button to set it into your data file.
-    Each item: {"name": "...", "dose": "...", "notes": "..."} (notes optional)
-    """
     return [
-        # Example:
         # {"name": "Vyvanse", "dose": "50 mg"},
         # {"name": "Gabapentin", "dose": "300 mg"},
     ]
+
+
 def _linear_regression_slope(xs: list[float], ys: list[float]) -> float:
     n = len(xs)
     if n < 2:
@@ -161,6 +161,37 @@ def _parse_minutes(value: str | None) -> int | None:
     return total if saw_unit else None
 
 
+def _trend_label_from_slope(slope: float, stable_band: float = 0.02) -> str:
+    """
+    slope = change in avg mood per day.
+    stable_band = threshold below which we call it 'Stable'.
+    """
+    if slope > stable_band:
+        return "Increasing"
+    if slope < -stable_band:
+        return "Decreasing"
+    return "Stable"
+
+
+# -------------------------
+# Vyvanse phase shading
+# -------------------------
+
+VY_PHASE_COLORS = {
+    "Not yet": "#6b7280",  # gray
+    "Loading": "#94a3b8",  # slate
+    "Onset": "#60a5fa",  # blue
+    "Peak": "#22c55e",  # green
+    "Plateau": "#14b8a6",  # teal
+    "Taper": "#f59e0b",  # amber
+    "Tail": "#a78bfa",  # violet
+}
+
+
+def _vy_color_for_phase(phase: str) -> str:
+    return VY_PHASE_COLORS.get(phase, "#94a3b8")
+
+
 # -------------------------
 # Mood graph color zones
 # -------------------------
@@ -173,10 +204,10 @@ MOOD_LINE_RED = "#b00020"
 MOOD_LINE_YELLOW = "#b26a00"
 MOOD_LINE_GREEN = "#0b6b2a"
 
-
 # -------------------------
 # Data access
 # -------------------------
+
 
 class Store:
     def __init__(self, data_path: Path):
@@ -189,6 +220,7 @@ class Store:
             d = {}
         if not isinstance(d, dict):
             d = {}
+
         d.setdefault("medications", [])
         d.setdefault("moods", [])
         d.setdefault("daily_logs", {})
@@ -200,7 +232,6 @@ class Store:
         save_json(self.data_path, data)
 
 
-
 class ChaosCatcherApp(tk.Tk):
     def __init__(self, store: Store):
         super().__init__()
@@ -209,15 +240,21 @@ class ChaosCatcherApp(tk.Tk):
         self.store = store
 
         self._graph_redraw_job: str | None = None
-        self._graph_tooltip = None
+        self._graph_tooltip: tk.Toplevel | None = None
+
         self._build_header()
         self._build_tabs()
         self._refresh_all_lists()
 
+        self._refresh_vyvanse_chip()
+        self.after(60_000, self._tick_vyvanse_chip)  # update every minute
         self.after(120, self._draw_mood_graph)
+
+    # -------- Crash guard --------
 
     def report_callback_exception(self, exc, val, tb):  # type: ignore[override]
         import traceback
+
         traceback.print_exception(exc, val, tb)
         try:
             messagebox.showerror("Crash prevented", f"{exc.__name__}: {val}")
@@ -230,36 +267,263 @@ class ChaosCatcherApp(tk.Tk):
                 return fn(*args, **kwargs)
             except BaseException as e:
                 import traceback
+
                 traceback.print_exc()
                 try:
                     messagebox.showerror("Crash prevented", f"{type(e).__name__}: {e}")
                 except Exception:
                     pass
                 return None
+
         return wrapped
+
+    def _normalize_name(self, s: object) -> str:
+        return str(s or "").strip().lower()
+
+    # -------------------------
+    # Vyvanse arc helpers
+    # -------------------------
+
+    def _find_latest_vyvanse_entry(self):
+        data = self.store.load()
+        meds = data.get("medications", [])
+        best_entry = None
+        best_dt = None
+
+        for m in meds:
+            name = str(m.get("name", "")).strip().lower()
+            if ("vyvanse" not in name) and ("vyv" not in name):
+                continue
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            if not dt:
+                continue
+            if best_dt is None or dt > best_dt:
+                best_dt = dt
+                best_entry = m
+
+        return best_entry, best_dt
+
+    def _vyvanse_last_dose_guess(self) -> str:
+        """Try to reuse the last logged Vyvanse dose, fallback to 50 mg."""
+        entry, _dt = self._find_latest_vyvanse_entry()
+        if entry:
+            d = str(entry.get("dose", "")).strip()
+            if d:
+                return d
+        return "50 mg"
+
+    def _vyvanse_arc_phase(self, t_minutes: float) -> str:
+        if t_minutes < 0:
+            return "Not yet"
+        if t_minutes < 30:
+            return "Loading"
+        if t_minutes < 90:
+            return "Onset"
+        if t_minutes < 300:
+            return "Peak"
+        if t_minutes < 480:
+            return "Plateau"
+        if t_minutes < 660:
+            return "Taper"
+        return "Tail"
+
+    def _fmt_hm(self, minutes: int) -> str:
+        h = minutes // 60
+        m = minutes % 60
+        if h <= 0:
+            return f"{m}m"
+        return f"{h}h {m:02d}m"
+
+    def _build_vyvanse_chip_text(self, dose_dt: datetime):
+        now = _now_local()
+        delta = now - dose_dt
+        t_min = delta.total_seconds() / 60.0
+        phase = self._vyvanse_arc_phase(t_min)
+
+        t_pretty = self._fmt_hm(max(0, int(round(t_min))))
+        chip = f"Vyvanse: {phase} (T+{t_pretty})"
+        return chip, phase, t_min
+
+    def _vyvanse_details_text(self, entry, dose_dt: datetime, phase: str, t_min: float) -> str:
+        try:
+            taken_str = dose_dt.strftime("%I:%M %p").lstrip("0")
+        except Exception:
+            taken_str = str(dose_dt)
+
+        dose = (entry or {}).get("dose") or (entry or {}).get("amount") or ""
+        notes = (entry or {}).get("notes") or ""
+
+        windows = [
+            ("Loading", (0, 30)),
+            ("Onset", (30, 90)),
+            ("Peak", (90, 300)),
+            ("Plateau", (300, 480)),
+            ("Taper", (480, 660)),
+            ("Tail", (660, None)),
+        ]
+
+        lines: list[str] = []
+        lines.append(f"Taken: {taken_str}")
+        if dose:
+            lines.append(f"Dose: {dose}")
+        lines.append(f"Now: {_now_local().strftime('%I:%M %p').lstrip('0')}")
+        lines.append(f"Current: {phase} (T+{self._fmt_hm(max(0, int(round(t_min))))})")
+        lines.append("")
+        lines.append("Arc model:")
+        for label, (a, b) in windows:
+            if b is None:
+                lines.append(f"• {label}: {self._fmt_hm(a)}+")
+            else:
+                lines.append(f"• {label}: {self._fmt_hm(a)}–{self._fmt_hm(b)}")
+
+        if notes:
+            lines.append("")
+            lines.append("Notes:")
+            lines.append(str(notes))
+
+        return "\n".join(lines)
+
+    def _show_vyvanse_popup(self) -> None:
+        entry, dt = self._find_latest_vyvanse_entry()
+        if not entry or not dt:
+            messagebox.showinfo("Vyvanse Arc", "No Vyvanse dose found in your med log.")
+            return
+
+        _chip, phase, t_min = self._build_vyvanse_chip_text(dt)
+        details = self._vyvanse_details_text(entry, dt, phase, t_min)
+        messagebox.showinfo("Vyvanse Arc", details)
+
+    def _refresh_vyvanse_chip(self) -> None:
+        if not hasattr(self, "vy_arc_label"):
+            return
+
+        entry, dt = self._find_latest_vyvanse_entry()
+        if not entry or not dt:
+            self.vy_arc_label.configure(text="Vyvanse: —")
+            if hasattr(self, "vy_phase_bar"):
+                self.vy_phase_bar.configure(bg="#94a3b8")
+            return
+
+        chip, phase, _t_min = self._build_vyvanse_chip_text(dt)
+        self.vy_arc_label.configure(text=chip)
+
+        if hasattr(self, "vy_phase_bar"):
+            self.vy_phase_bar.configure(bg=_vy_color_for_phase(phase))
+
+    def _tick_vyvanse_chip(self) -> None:
+        self._refresh_vyvanse_chip()
+        self.after(60_000, self._tick_vyvanse_chip)
+
+    def _vyvanse_quick_log(self) -> None:
+        """
+        Quick Vyvanse logger:
+        - Always logs name='Vyvanse' so the header chip will work.
+        - Asks dose (default = last dose or 50 mg)
+        - Asks time (blank = now, supports 'today 7:34am')
+        - Optional notes
+        """
+        default_dose = self._vyvanse_last_dose_guess()
+
+        dose = simpledialog.askstring(
+            "Log Vyvanse",
+            "Dose (e.g. 50 mg):",
+            initialvalue=default_dose,
+            parent=self,
+        )
+        if dose is None:
+            return
+        dose = dose.strip()
+        if not dose:
+            messagebox.showerror("Missing dose", "Dose is required (e.g. 50 mg).")
+            return
+
+        t = simpledialog.askstring(
+            "Log Vyvanse",
+            "Time (blank = now). Examples: 'today 7:34am', '7:34am', ISO…",
+            initialvalue="",
+            parent=self,
+        )
+        if t is None:
+            return
+
+        notes = simpledialog.askstring("Log Vyvanse", "Notes (optional):", initialvalue="", parent=self)
+        if notes is None:
+            notes = ""
+
+        try:
+            ts = _parse_ts(t.strip())
+        except Exception as e:
+            messagebox.showerror("Bad time", str(e))
+            return
+
+        entry: dict[str, Any] = {"ts": ts, "name": "Vyvanse", "dose": dose}
+        if notes.strip():
+            entry["notes"] = notes.strip()
+
+        data = self.store.load()
+        data.setdefault("medications", []).append(entry)
+        self.store.save(data)
+
+        self._refresh_med_list()
+        self._refresh_vyvanse_chip()
 
     # -------- Header --------
 
     def _build_header(self) -> None:
+        # Phase bar (simple + reliable shading indicator)
+        self.vy_phase_bar = tk.Frame(self, height=6, bg="#94a3b8")
+        self.vy_phase_bar.pack(fill="x", side="top")
+
         frm = ttk.Frame(self, padding=10)
         frm.pack(fill="x")
 
-        ttk.Label(frm, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(side="left")
+        left = ttk.Frame(frm)
+        left.pack(side="left", fill="x", expand=True)
+
+        right = ttk.Frame(frm)
+        right.pack(side="right")
+
+        ttk.Label(left, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(side="left")
 
         self.path_var = tk.StringVar(value=str(self.store.data_path))
-        ttk.Label(frm, textvariable=self.path_var, foreground="#666").pack(side="left", padx=12)
+        ttk.Label(left, textvariable=self.path_var, foreground="#666").pack(side="left", padx=12)
 
-        btns = ttk.Frame(frm)
-        btns.pack(side="right")
+        btns = ttk.Frame(right)
+        btns.pack(side="left")
 
         ttk.Button(btns, text="Refresh", command=self._safe_cmd(self._refresh_all_lists)).pack(side="left", padx=4)
         ttk.Button(btns, text="Open Data Folder", command=self._safe_cmd(self._open_data_folder)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Log Vyvanse", command=self._safe_cmd(self._vyvanse_quick_log)).pack(side="left", padx=4)
+
+        # Vyvanse arc chip (click for details)
+        self.vy_arc_label = ttk.Label(right, text="Vyvanse: —", foreground="#444", cursor="hand2")
+        self.vy_arc_label.pack(side="left", padx=(12, 0))
+        self.vy_arc_label.bind("<Button-1>", lambda _e: self._show_vyvanse_popup())
 
     def _open_data_folder(self) -> None:
-        messagebox.showinfo(
-            "Data location",
-            f"Data file:\n{self.store.data_path}\n\nOpen it with your file manager if you want.",
-        )
+        """
+        Tries to open the folder containing the data file in the OS file manager.
+        Falls back to an info dialog if it can't.
+        """
+        p = self.store.data_path
+        folder = p.parent
+
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                import subprocess
+
+                subprocess.run(["open", str(folder)], check=False)
+            else:
+                import subprocess
+
+                subprocess.run(["xdg-open", str(folder)], check=False)
+            return
+        except Exception:
+            pass
+
+        messagebox.showinfo("Data location", f"Data file:\n{p}\n\nFolder:\n{folder}")
 
     # -------- Tabs --------
 
@@ -281,145 +545,6 @@ class ChaosCatcherApp(tk.Tk):
         self._build_mood_tab()
         self._build_stats_tab()
         self._build_export_tab()
-    # -------- Medication tab --------
-  
-
-    def _build_med_tab(self) -> None:
-        left = ttk.Frame(self.tab_med)
-        right = ttk.Frame(self.tab_med)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        right.pack(side="right", fill="both", expand=True)
-
-        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
-
-        self.med_name = tk.StringVar()
-        self.med_dose = tk.StringVar()
-        self.med_time = tk.StringVar(value="")
-        self.med_notes = tk.StringVar()
-
-        self._labeled_entry(left, "Name", self.med_name)
-        self._labeled_entry(left, "Dose", self.med_dose)
-        self._labeled_entry(left, "Time (e.g. today 7:34am)", self.med_time)
-        self._labeled_entry(left, "Notes (optional)", self.med_notes)
-
-        ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
-        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(fill="x", pady=(6, 0))
-
-        ttk.Separator(right).pack(fill="x", pady=(0, 8))
-        ttk.Label(right, text="Medication log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-
-        self.med_list = tk.Listbox(right, height=20)
-        self.med_list.pack(fill="both", expand=True, pady=8)
-
-        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._med_delete_selected)).pack(anchor="e")
-
-   
-
-    # -------- Mood tab --------
-
-    def _build_mood_tab(self) -> None:
-        left = ttk.Frame(self.tab_mood)
-        right = ttk.Frame(self.tab_mood)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        right.pack(side="right", fill="both", expand=True)
-
-        ttk.Label(left, text="Add mood", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
-
-        self.mood_score = tk.IntVar(value=6)
-        self.mood_time = tk.StringVar(value="today 9am")
-        self.mood_tags = tk.StringVar()
-        self.mood_notes = tk.StringVar()
-
-        self.sleep_total = tk.StringVar()
-        self.sleep_rem = tk.StringVar()
-        self.sleep_deep = tk.StringVar()
-
-        ttk.Label(left, text="Score (1–10)").pack(anchor="w")
-        ttk.Spinbox(left, from_=1, to=10, textvariable=self.mood_score, width=6).pack(anchor="w", pady=(0, 8))
-
-        self._labeled_entry(left, "Time (e.g. today 9am)", self.mood_time)
-        self._labeled_entry(left, "Tags (comma/space)", self.mood_tags)
-        self._labeled_entry(left, "Notes (optional)", self.mood_notes)
-
-        ttk.Separator(left).pack(fill="x", pady=10)
-        ttk.Label(left, text="Sleep (optional)").pack(anchor="w")
-        self._labeled_entry(left, "Total (e.g. 7:53 or 473)", self.sleep_total)
-        self._labeled_entry(left, "REM (e.g. 1:22 or 82)", self.sleep_rem)
-        self._labeled_entry(left, "Deep (e.g. 0:13 or 13)", self.sleep_deep)
-
-        ttk.Button(left, text="Add Mood", command=self._safe_cmd(self._mood_add)).pack(fill="x", pady=(8, 0))
-
-        ttk.Separator(right).pack(fill="x", pady=(0, 8))
-        ttk.Label(right, text="Mood log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-
-        self.mood_list = tk.Listbox(right, height=20)
-        self.mood_list.pack(fill="both", expand=True, pady=8)
-
-        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._mood_delete_selected)).pack(anchor="e")
-
-    # -------- Stats tab --------
-
-    def _build_stats_tab(self) -> None:
-        top = ttk.Frame(self.tab_stats)
-        top.pack(fill="x")
-
-        ttk.Label(top, text="Stats", font=("TkDefaultFont", 12, "bold")).pack(side="left")
-        self.stats_days = tk.IntVar(value=14)
-        ttk.Label(top, text="Lookback days:").pack(side="left", padx=(20, 6))
-        ttk.Spinbox(top, from_=1, to=365, textvariable=self.stats_days, width=6).pack(side="left")
-
-        btns = ttk.Frame(self.tab_stats)
-        btns.pack(fill="x", pady=10)
-        ttk.Button(btns, text="Medication counts", command=self._safe_cmd(self._stats_med_counts)).pack(side="left", padx=6)
-        ttk.Button(btns, text="Mood daily averages", command=self._safe_cmd(self._stats_mood_daily)).pack(side="left", padx=6)
-
-        graph_box = ttk.LabelFrame(self.tab_stats, text="Mood Graph (avg per day)")
-        graph_box.pack(fill="x", padx=4, pady=6)
-
-        controls = ttk.Frame(graph_box)
-        controls.pack(fill="x", padx=6, pady=4)
-
-        ttk.Label(controls, text="Days:").pack(side="left")
-        self.graph_days = tk.IntVar(value=14)
-        ttk.Spinbox(controls, from_=1, to=365, textvariable=self.graph_days, width=6).pack(side="left", padx=6)
-
-        ttk.Button(controls, text="Refresh graph", command=self._safe_cmd(self._draw_mood_graph)).pack(side="left", padx=6)
-        ttk.Label(controls, text="Avg mood per day (1–10)").pack(side="right")
-
-        self.graph_canvas = tk.Canvas(
-            graph_box,
-            height=160,
-            bg="white",
-            highlightthickness=1,
-            highlightbackground="#ccc",
-        )
-        self.graph_canvas.pack(fill="x", padx=6, pady=(0, 6))
-        self.graph_canvas.bind("<Configure>", self._schedule_graph_redraw)
-
-        analysis_box = ttk.LabelFrame(self.tab_stats, text="Mood Analysis")
-        analysis_box.pack(fill="x", padx=4, pady=6)
-
-        row = ttk.Frame(analysis_box)
-        row.pack(fill="x", padx=6, pady=4)
-
-        ttk.Label(row, text="Range:").pack(side="left")
-        self.analysis_range = tk.StringVar(value="Last 30 days")
-        self.analysis_options = ["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "All time"]
-        ttk.Combobox(
-            row,
-            textvariable=self.analysis_range,
-            values=self.analysis_options,
-            width=16,
-            state="readonly",
-        ).pack(side="left", padx=6)
-        ttk.Button(row, text="Analyze", command=self._safe_cmd(self._analyze_mood)).pack(side="left", padx=6)
-
-        self.analysis_out = tk.Text(analysis_box, height=6, wrap="word")
-        self.analysis_out.pack(fill="x", padx=6, pady=(0, 6))
-        self._analysis_write("Mood Analysis\n----------------------------\nClick Analyze.")
-
-        self.stats_out = tk.Text(self.tab_stats, wrap="word")
-        self.stats_out.pack(fill="both", expand=True, pady=(8, 0))
 
     # -------- Export tab --------
 
@@ -472,6 +597,38 @@ class ChaosCatcherApp(tk.Tk):
         self._refresh_med_list()
         self._refresh_mood_list()
         self._draw_mood_graph()
+        self._refresh_vyvanse_chip()
+
+    # -------- Medication tab --------
+
+    def _build_med_tab(self) -> None:
+        left = ttk.Frame(self.tab_med)
+        right = ttk.Frame(self.tab_med)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+
+        self.med_name = tk.StringVar()
+        self.med_dose = tk.StringVar()
+        self.med_time = tk.StringVar(value="")
+        self.med_notes = tk.StringVar()
+
+        self._labeled_entry(left, "Name", self.med_name)
+        self._labeled_entry(left, "Dose", self.med_dose)
+        self._labeled_entry(left, "Time (e.g. today 7:34am)", self.med_time)
+        self._labeled_entry(left, "Notes (optional)", self.med_notes)
+
+        ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
+        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(fill="x", pady=(6, 0))
+
+        ttk.Separator(right).pack(fill="x", pady=(0, 8))
+        ttk.Label(right, text="Medication log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+
+        self.med_list = tk.Listbox(right, height=20)
+        self.med_list.pack(fill="both", expand=True, pady=8)
+
+        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._med_delete_selected)).pack(anchor="e")
 
     # -------- Medication actions --------
 
@@ -510,6 +667,7 @@ class ChaosCatcherApp(tk.Tk):
         self.med_notes.set("")
 
         self._refresh_med_list()
+        self._refresh_vyvanse_chip()
 
     def _med_take_all(self) -> None:
         """
@@ -550,6 +708,7 @@ class ChaosCatcherApp(tk.Tk):
 
         self.store.save(data)
         self._refresh_med_list()
+        self._refresh_vyvanse_chip()
         messagebox.showinfo("Logged", f"Added {added} meds at {_fmt_time(_now_local())}.")
 
     def _med_delete_selected(self) -> None:
@@ -575,6 +734,7 @@ class ChaosCatcherApp(tk.Tk):
         data["medications"] = meds
         self.store.save(data)
         self._refresh_med_list()
+        self._refresh_vyvanse_chip()
 
     def _refresh_med_list(self) -> None:
         self.med_list.delete(0, tk.END)
@@ -589,6 +749,48 @@ class ChaosCatcherApp(tk.Tk):
             if notes:
                 line += f"  |  {notes}"
             self.med_list.insert(tk.END, line)
+
+    # -------- Mood tab --------
+
+    def _build_mood_tab(self) -> None:
+        left = ttk.Frame(self.tab_mood)
+        right = ttk.Frame(self.tab_mood)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="Add mood", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+
+        self.mood_score = tk.IntVar(value=6)
+        self.mood_time = tk.StringVar(value="today 9am")
+        self.mood_tags = tk.StringVar()
+        self.mood_notes = tk.StringVar()
+
+        self.sleep_total = tk.StringVar()
+        self.sleep_rem = tk.StringVar()
+        self.sleep_deep = tk.StringVar()
+
+        ttk.Label(left, text="Score (1–10)").pack(anchor="w")
+        ttk.Spinbox(left, from_=1, to=10, textvariable=self.mood_score, width=6).pack(anchor="w", pady=(0, 8))
+
+        self._labeled_entry(left, "Time (e.g. today 9am)", self.mood_time)
+        self._labeled_entry(left, "Tags (comma/space)", self.mood_tags)
+        self._labeled_entry(left, "Notes (optional)", self.mood_notes)
+
+        ttk.Separator(left).pack(fill="x", pady=10)
+        ttk.Label(left, text="Sleep (optional)").pack(anchor="w")
+        self._labeled_entry(left, "Total (e.g. 7:53 or 473)", self.sleep_total)
+        self._labeled_entry(left, "REM (e.g. 1:22 or 82)", self.sleep_rem)
+        self._labeled_entry(left, "Deep (e.g. 0:13 or 13)", self.sleep_deep)
+
+        ttk.Button(left, text="Add Mood", command=self._safe_cmd(self._mood_add)).pack(fill="x", pady=(8, 0))
+
+        ttk.Separator(right).pack(fill="x", pady=(0, 8))
+        ttk.Label(right, text="Mood log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+
+        self.mood_list = tk.Listbox(right, height=20)
+        self.mood_list.pack(fill="both", expand=True, pady=8)
+
+        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._mood_delete_selected)).pack(anchor="e")
 
     # -------- Mood actions --------
 
@@ -631,9 +833,13 @@ class ChaosCatcherApp(tk.Tk):
         if notes:
             entry["notes"] = notes
 
-        st = _parse_minutes(self.sleep_total.get())
-        sr = _parse_minutes(self.sleep_rem.get())
-        sd = _parse_minutes(self.sleep_deep.get())
+        try:
+            st = _parse_minutes(self.sleep_total.get())
+            sr = _parse_minutes(self.sleep_rem.get())
+            sd = _parse_minutes(self.sleep_deep.get())
+        except ValueError as e:
+            messagebox.showerror("Bad sleep value", str(e))
+            return
 
         if st is not None:
             entry["sleep_total_min"] = st
@@ -706,6 +912,70 @@ class ChaosCatcherApp(tk.Tk):
             if notes:
                 line += f" | {notes}"
             self.mood_list.insert(tk.END, line)
+
+    # -------- Stats tab --------
+
+    def _build_stats_tab(self) -> None:
+        top = ttk.Frame(self.tab_stats)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Stats", font=("TkDefaultFont", 12, "bold")).pack(side="left")
+        self.stats_days = tk.IntVar(value=14)
+        ttk.Label(top, text="Lookback days:").pack(side="left", padx=(20, 6))
+        ttk.Spinbox(top, from_=1, to=365, textvariable=self.stats_days, width=6).pack(side="left")
+
+        btns = ttk.Frame(self.tab_stats)
+        btns.pack(fill="x", pady=10)
+        ttk.Button(btns, text="Medication counts", command=self._safe_cmd(self._stats_med_counts)).pack(side="left", padx=6)
+        ttk.Button(btns, text="Mood daily averages", command=self._safe_cmd(self._stats_mood_daily)).pack(side="left", padx=6)
+
+        graph_box = ttk.LabelFrame(self.tab_stats, text="Mood Graph (avg per day)")
+        graph_box.pack(fill="x", padx=4, pady=6)
+
+        controls = ttk.Frame(graph_box)
+        controls.pack(fill="x", padx=6, pady=4)
+
+        ttk.Label(controls, text="Days:").pack(side="left")
+        self.graph_days = tk.IntVar(value=14)
+        ttk.Spinbox(controls, from_=1, to=365, textvariable=self.graph_days, width=6).pack(side="left", padx=6)
+
+        ttk.Button(controls, text="Refresh graph", command=self._safe_cmd(self._draw_mood_graph)).pack(side="left", padx=6)
+        ttk.Label(controls, text="Avg mood per day (1–10)").pack(side="right")
+
+        self.graph_canvas = tk.Canvas(
+            graph_box,
+            height=160,
+            bg="white",
+            highlightthickness=1,
+            highlightbackground="#ccc",
+        )
+        self.graph_canvas.pack(fill="x", padx=6, pady=(0, 6))
+        self.graph_canvas.bind("<Configure>", self._schedule_graph_redraw)
+
+        analysis_box = ttk.LabelFrame(self.tab_stats, text="Mood Analysis")
+        analysis_box.pack(fill="x", padx=4, pady=6)
+
+        row = ttk.Frame(analysis_box)
+        row.pack(fill="x", padx=6, pady=4)
+
+        ttk.Label(row, text="Range:").pack(side="left")
+        self.analysis_range = tk.StringVar(value="Last 30 days")
+        self.analysis_options = ["Last 7 days", "Last 14 days", "Last 30 days", "Last 90 days", "All time"]
+        ttk.Combobox(
+            row,
+            textvariable=self.analysis_range,
+            values=self.analysis_options,
+            width=16,
+            state="readonly",
+        ).pack(side="left", padx=6)
+        ttk.Button(row, text="Analyze", command=self._safe_cmd(self._analyze_mood)).pack(side="left", padx=6)
+
+        self.analysis_out = tk.Text(analysis_box, height=6, wrap="word")
+        self.analysis_out.pack(fill="x", padx=6, pady=(0, 6))
+        self._analysis_write("Mood Analysis\n----------------------------\nClick Analyze.")
+
+        self.stats_out = tk.Text(self.tab_stats, wrap="word")
+        self.stats_out.pack(fill="both", expand=True, pady=(8, 0))
 
     # -------- Stats actions --------
 
@@ -863,12 +1133,24 @@ class ChaosCatcherApp(tk.Tk):
         mn = min(scores)
         mx = max(scores)
 
+        # --- NEW: trend line for analysis ---
+        series = self._daily_mood_series(days=days if days is not None else 3650)
+        if len(series) >= 3:
+            vals = [v for _, v in series]
+            xs = [float(i) for i in range(len(vals))]
+            slope = _linear_regression_slope(xs, [float(v) for v in vals])
+            trend_label = _trend_label_from_slope(slope, stable_band=0.02)
+            trend_line = f"Trend: {trend_label} ({slope:+.2f}/day)\n"
+        else:
+            trend_line = "Trend: Not enough data for trend.\n"
+
         base_text: str = (
             "Mood Analysis\n----------------------------\n"
             f"Range: {window_label}\n\n"
             f"Entries: {len(scores)}\n"
             f"Average rating: {avg:.2f}\n"
-            f"Min / Max: {mn} / {mx}\n\n"
+            f"Min / Max: {mn} / {mx}\n"
+            f"{trend_line}\n"
             f"Sleep vs mood: {sleep_insight}\n"
         )
 
@@ -1098,41 +1380,60 @@ class ChaosCatcherApp(tk.Tk):
 
     # -------- Graph tooltip helpers --------
 
-    def _graph_show_tooltip(self, event, text: str) -> None:
-        canvas = self.graph_canvas
-
+    def _graph_show_tooltip(self, _event, text: str) -> None:
+        # Kill any existing tooltip first
         self._graph_hide_tooltip()
 
-        x = event.x + 10
-        y = max(5, event.y - 10)
+        tip = tk.Toplevel(self)
+        tip.wm_overrideredirect(True)  # no title bar/borders
+        try:
+            tip.attributes("-topmost", True)
+        except Exception:
+            pass
 
-        self._graph_tooltip = canvas.create_text(
-            x,
-            y,
+        label = tk.Label(
+            tip,
             text=text,
-            anchor="nw",
-            fill="#111",
+            justify="left",
+            background="#ffffe0",
+            relief="solid",
+            borderwidth=1,
             font=("TkDefaultFont", 9),
-            tags="tooltip",
+            padx=6,
+            pady=4,
         )
+        label.pack()
 
-        bbox = canvas.bbox(self._graph_tooltip)
-        if bbox:
-            rect = canvas.create_rectangle(
-                bbox[0] - 6,
-                bbox[1] - 4,
-                bbox[2] + 6,
-                bbox[3] + 4,
-                fill="#ffffe0",
-                outline="#999",
-                tags="tooltip_bg",
-            )
-            canvas.tag_lower(rect, self._graph_tooltip)
+        # Position near mouse, keep within screen bounds
+        x = self.winfo_pointerx() + 12
+        y = self.winfo_pointery() - 10
+
+        tip.update_idletasks()
+        w = tip.winfo_width()
+        h = tip.winfo_height()
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+
+        if x + w > screen_w:
+            x = screen_w - w - 10
+        if y + h > screen_h:
+            y = screen_h - h - 10
+        if x < 0:
+            x = 0
+        if y < 0:
+            y = 0
+
+        tip.geometry(f"+{x}+{y}")
+        self._graph_tooltip = tip
 
     def _graph_hide_tooltip(self, _event=None) -> None:
-        canvas = self.graph_canvas
-        canvas.delete("tooltip")
-        canvas.delete("tooltip_bg")
+        tip = getattr(self, "_graph_tooltip", None)
+        if tip is not None:
+            try:
+                tip.destroy()
+            except Exception:
+                pass
         self._graph_tooltip = None
 
     def _draw_mood_graph(self) -> None:
@@ -1179,6 +1480,7 @@ class ChaosCatcherApp(tk.Tk):
         values = [avg for _, avg, _, _, _ in daily_avgs]
         xs = list(range(len(values)))
         slope = _linear_regression_slope([float(x) for x in xs], [float(y) for y in values])
+        trend_label = _trend_label_from_slope(slope, stable_band=0.02)
 
         vmin, vmax = 1.0, 10.0
         zone_red_max = 4.0
@@ -1221,13 +1523,21 @@ class ChaosCatcherApp(tk.Tk):
                 return MOOD_LINE_YELLOW
             return MOOD_LINE_GREEN
 
-        if len(values) == 1:
-            day, v, count, vmin_day, vmax_day = daily_avgs[0]
-            x0 = x_for(0)
-            y0 = y_for(v)
+        # Optional: draw connecting line for readability
+        if len(values) >= 2:
+            pts: list[float] = []
+            for i, v in enumerate(values):
+                pts.extend([x_for(i), y_for(v)])
+            canvas.create_line(*pts, fill="#333", width=2)
+
+        for i, (day, v, count, vmin_day, vmax_day) in enumerate(daily_avgs):
+            x, y = x_for(i), y_for(v)
 
             dot = canvas.create_oval(
-                x0 - 3, y0 - 3, x0 + 3, y0 + 3,
+                x - 3,
+                y - 3,
+                x + 3,
+                y + 3,
                 outline="",
                 fill=zone_color(v),
             )
@@ -1242,42 +1552,20 @@ class ChaosCatcherApp(tk.Tk):
             canvas.tag_bind(dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t))
             canvas.tag_bind(dot, "<Leave>", self._graph_hide_tooltip)
 
-        else:
-            for i, (day, v, count, vmin_day, vmax_day) in enumerate(daily_avgs):
-                x, y = x_for(i), y_for(v)
-
-                dot = canvas.create_oval(
-                    x - 3, y - 3, x + 3, y + 3,
-                    outline="",
-                    fill=zone_color(v),
-                )
-
-                tooltip_text = (
-                    f"{day}\n"
-                    f"Avg: {v:.2f}/10\n"
-                    f"Entries: {count}\n"
-                    f"Min/Max: {vmin_day}/{vmax_day}"
-                )
-
-                canvas.tag_bind(dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t))
-                canvas.tag_bind(dot, "<Leave>", self._graph_hide_tooltip)
-
         first_day = daily_avgs[0][0]
         last_day = daily_avgs[-1][0]
         canvas.create_text(pad_l, h - 10, text=first_day, anchor="w", fill="#666")
         canvas.create_text(w - pad_r, h - 10, text=last_day, anchor="e", fill="#666")
 
         if len(values) >= 2:
-            if slope > 0.02:
-                trend_txt = f"Trend: +{slope:.2f}/day"
-            elif slope < -0.02:
-                trend_txt = f"Trend: {slope:.2f}/day"
-            else:
-                trend_txt = "Trend: ~flat"
+            trend_txt = f"Trend: {trend_label} ({slope:+.2f}/day)"
             canvas.create_text(w - pad_r, pad_t, text=trend_txt, anchor="ne", fill="#666")
+
+
 # -------------------------
 # GUI Entrypoint
 # -------------------------
+
 
 def run_gui(argv=None) -> None:
     data_path = resolve_data_path(None, None)
