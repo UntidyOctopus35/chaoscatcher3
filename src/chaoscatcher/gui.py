@@ -83,7 +83,17 @@ def _parse_ts(value: str | None) -> str:
 
     return dt.astimezone().isoformat(timespec="seconds")
 
-
+def _default_daily_med_list() -> list[dict[str, str]]:
+    """
+    Default daily meds template.
+    Edit this list in code OR use the GUI button to set it into your data file.
+    Each item: {"name": "...", "dose": "...", "notes": "..."} (notes optional)
+    """
+    return [
+        # Example:
+        # {"name": "Vyvanse", "dose": "50 mg"},
+        # {"name": "Gabapentin", "dose": "300 mg"},
+    ]
 def _linear_regression_slope(xs: list[float], ys: list[float]) -> float:
     n = len(xs)
     if n < 2:
@@ -183,15 +193,13 @@ class Store:
         d.setdefault("moods", [])
         d.setdefault("daily_logs", {})
         d.setdefault("water", [])
+        d.setdefault("daily_med_list", _default_daily_med_list())
         return d
 
     def save(self, data: dict[str, Any]) -> None:
         save_json(self.data_path, data)
 
 
-# -------------------------
-# GUI
-# -------------------------
 
 class ChaosCatcherApp(tk.Tk):
     def __init__(self, store: Store):
@@ -273,8 +281,8 @@ class ChaosCatcherApp(tk.Tk):
         self._build_mood_tab()
         self._build_stats_tab()
         self._build_export_tab()
-
     # -------- Medication tab --------
+  
 
     def _build_med_tab(self) -> None:
         left = ttk.Frame(self.tab_med)
@@ -295,6 +303,7 @@ class ChaosCatcherApp(tk.Tk):
         self._labeled_entry(left, "Notes (optional)", self.med_notes)
 
         ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
+        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(fill="x", pady=(6, 0))
 
         ttk.Separator(right).pack(fill="x", pady=(0, 8))
         ttk.Label(right, text="Medication log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
@@ -303,6 +312,8 @@ class ChaosCatcherApp(tk.Tk):
         self.med_list.pack(fill="both", expand=True, pady=8)
 
         ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._med_delete_selected)).pack(anchor="e")
+
+   
 
     # -------- Mood tab --------
 
@@ -470,29 +481,76 @@ class ChaosCatcherApp(tk.Tk):
         t = self.med_time.get().strip()
         notes = self.med_notes.get().strip()
 
-        if not name or not dose:
-            messagebox.showerror("Missing info", "Medication Name and Dose are required.")
+        if not name:
+            messagebox.showerror("Missing name", "Please enter a medication name.")
+            return
+        if not dose:
+            messagebox.showerror("Missing dose", "Please enter a dose (e.g. 50 mg).")
             return
 
         try:
-            ts = _parse_ts(t)
-            data = self.store.load()
-            meds = data.setdefault("medications", [])
+            ts = _parse_ts(t)  # blank/today/now supported
+        except Exception as e:
+            messagebox.showerror("Bad time", str(e))
+            return
+
+        entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
+        if notes:
+            entry["notes"] = notes
+
+        data = self.store.load()
+        meds = data.setdefault("medications", [])
+        meds.append(entry)
+        self.store.save(data)
+
+        # clear inputs
+        self.med_name.set("")
+        self.med_dose.set("")
+        self.med_time.set("")
+        self.med_notes.set("")
+
+        self._refresh_med_list()
+
+    def _med_take_all(self) -> None:
+        """
+        Logs every item in data["daily_med_list"] as a medication entry at the current timestamp.
+        """
+        data = self.store.load()
+        template = data.get("daily_med_list", [])
+
+        if not isinstance(template, list) or not template:
+            messagebox.showinfo(
+                "Daily meds list empty",
+                "No daily meds are configured yet.\n\n"
+                "Edit 'daily_med_list' in your data JSON (or we can add a GUI editor).",
+            )
+            return
+
+        ts = _now_local().isoformat(timespec="seconds")
+        meds = data.setdefault("medications", [])
+
+        added = 0
+        for item in template:
+            if not isinstance(item, dict):
+                continue
+
+            name = str(item.get("name", "")).strip()
+            dose = str(item.get("dose", "")).strip()
+            notes = str(item.get("notes", "")).strip()
+
+            if not name or not dose:
+                continue
+
             entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
             if notes:
                 entry["notes"] = notes
-            meds.append(entry)
-            self.store.save(data)
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("Add medication failed", f"{type(e).__name__}: {e}")
-            return
 
-        self.med_name.set("")
-        self.med_dose.set("")
-        self.med_notes.set("")
+            meds.append(entry)
+            added += 1
+
+        self.store.save(data)
         self._refresh_med_list()
+        messagebox.showinfo("Logged", f"Added {added} meds at {_fmt_time(_now_local())}.")
 
     def _med_delete_selected(self) -> None:
         sel = self.med_list.curselection()
