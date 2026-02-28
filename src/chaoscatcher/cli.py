@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from ._util import _dt_from_entry_ts, _fmt_time, _now_local
 from .paths import resolve_data_path
 from .safety import assert_safe_data_path
 from .storage import load_json, save_json
@@ -16,10 +17,6 @@ from .timeparse import parse_ts
 # -------------------------
 # Time helpers
 # -------------------------
-
-
-def _now_local() -> datetime:
-    return datetime.now().astimezone()
 
 
 def _now_iso() -> str:
@@ -66,16 +63,6 @@ def _parse_ts(value: str | None) -> str:
     return dt.astimezone().isoformat(timespec="seconds")
 
 
-def _dt_from_entry_ts(ts: str) -> datetime | None:
-    try:
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_now_local().tzinfo)
-        return dt.astimezone()
-    except Exception:
-        return None
-
-
 def _window_cutoff(window: str) -> tuple[datetime | None, str]:
     now = _now_local()
     if window == "7":
@@ -92,14 +79,6 @@ def _window_cutoff(window: str) -> tuple[datetime | None, str]:
 # -------------------------
 # Formatting helpers
 # -------------------------
-
-
-def _fmt_time(dt: datetime) -> str:
-    # Linux: %-I works; Windows: fallback
-    try:
-        return dt.strftime("%-I:%M %p")
-    except ValueError:
-        return dt.strftime("%I:%M %p").lstrip("0")
 
 
 def _parse_tags(raw: str | None) -> list[str]:

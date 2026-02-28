@@ -8,36 +8,11 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
+from ._util import _dt_from_entry_ts, _fmt_time, _now_local
 from .paths import resolve_data_path
 from .safety import assert_safe_data_path
 from .storage import load_json, save_json
 from .timeparse import parse_ts
-
-# -------------------------
-# Shared helpers (module-level)
-# -------------------------
-
-
-def _now_local() -> datetime:
-    return datetime.now().astimezone()
-
-
-def _fmt_time(dt: datetime) -> str:
-    # Windows-safe formatting
-    try:
-        return dt.strftime("%-I:%M %p")
-    except ValueError:
-        return dt.strftime("%I:%M %p").lstrip("0")
-
-
-def _dt_from_entry_ts(ts: str) -> datetime | None:
-    try:
-        dt = datetime.fromisoformat(ts)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=_now_local().tzinfo)
-        return dt.astimezone()
-    except Exception:
-        return None
 
 
 def _parse_ts(value: str | None) -> str:
