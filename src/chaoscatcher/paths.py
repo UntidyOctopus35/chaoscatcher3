@@ -2,10 +2,12 @@ from __future__ import annotations
 from pathlib import Path
 import os
 
+
 def default_data_path(profile: str | None = None) -> Path:
     base = Path.home() / ".config" / "chaoscatcher"
     name = f"{profile}.json" if profile else "data.json"
     return base / name
+
 
 def resolve_data_path(data_arg: str | None, profile: str | None) -> Path:
     if data_arg:

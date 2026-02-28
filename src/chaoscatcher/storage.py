@@ -56,12 +56,15 @@ def save_json(path: Path, data: Any) -> None:
 
     tmp = path.with_name(path.name + ".tmp")
 
-    payload = json.dumps(
-        data,
-        indent=2,
-        sort_keys=True,
-        ensure_ascii=False,
-    ) + "\n"
+    payload = (
+        json.dumps(
+            data,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        + "\n"
+    )
 
     with open(tmp, "w", encoding="utf-8") as f:
         f.write(payload)
