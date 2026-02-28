@@ -29,5 +29,8 @@ jobs:
       - name: Format check (ruff)
         run: ruff format --check .
 
+      - name: Verify package importable
+        run: python -c "import chaoscatcher; print('chaoscatcher', chaoscatcher.__version__)"
+
       - name: Test (pytest)
         run: python -m pytest -v --tb=long
