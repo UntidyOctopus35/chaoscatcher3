@@ -9,6 +9,7 @@ name = "chaoscatcher"
 version = "0.3.0"
 description = "ChaosCatcher self-care suite"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = []
 
