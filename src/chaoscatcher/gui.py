@@ -43,23 +43,12 @@ def _parse_ts(value: str | None) -> str:
         return _parse_ts(f"{today} {rest}")
 
     try:
-        dt = parse_ts(raw)
+        return parse_ts(raw)
     except BaseException as e:
         raise ValueError(
             "Could not parse time. Try: '7:34am', 'today 7:34am', 'yesterday 9am', "
             "or ISO like '2026-02-25T07:34:00-05:00'."
         ) from e
-
-    if isinstance(dt, str):
-        try:
-            dt = datetime.fromisoformat(dt)
-        except Exception as e:
-            raise ValueError(f"Could not parse time: {value!r}") from e
-
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_now_local().tzinfo)
-
-    return dt.astimezone().isoformat(timespec="seconds")
 
 
 def _default_daily_med_list() -> list[dict[str, str]]:
@@ -518,7 +507,7 @@ class ChaosCatcherApp(tk.Tk):
         idx = sel[0]
         data = self.store.load()
         meds = data.get("medications", [])
-        meds_sorted = list(reversed(meds))
+        meds_sorted = sorted(meds, key=lambda m: str(m.get("ts", "")), reverse=True)
         if idx < 0 or idx >= len(meds_sorted):
             return
         target = meds_sorted[idx]
@@ -536,7 +525,7 @@ class ChaosCatcherApp(tk.Tk):
     def _refresh_med_list(self) -> None:
         self.med_list.delete(0, tk.END)
         data = self.store.load()
-        meds = list(reversed(data.get("medications", [])))
+        meds = sorted(data.get("medications", []), key=lambda m: str(m.get("ts", "")), reverse=True)
 
         for m in meds:
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
@@ -853,7 +842,7 @@ class ChaosCatcherApp(tk.Tk):
         idx = sel[0]
         data = self.store.load()
         moods = data.get("moods", [])
-        moods_sorted = list(reversed(moods))
+        moods_sorted = sorted(moods, key=lambda m: str(m.get("ts", "")), reverse=True)
         if idx < 0 or idx >= len(moods_sorted):
             return
         target = moods_sorted[idx]
@@ -871,7 +860,7 @@ class ChaosCatcherApp(tk.Tk):
     def _refresh_mood_list(self) -> None:
         self.mood_list.delete(0, tk.END)
         data = self.store.load()
-        moods = list(reversed(data.get("moods", [])))
+        moods = sorted(data.get("moods", []), key=lambda m: str(m.get("ts", "")), reverse=True)
 
         for m in moods:
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
@@ -1106,7 +1095,7 @@ class ChaosCatcherApp(tk.Tk):
 
         self.water_list.delete(0, tk.END)
         data = self.store.load()
-        water = list(reversed(data.get("water", [])))
+        water = sorted(data.get("water", []), key=lambda w: str(w.get("ts", "")), reverse=True)
 
         for w in water:
             dt = _dt_from_entry_ts(str(w.get("ts", "")))
@@ -1126,7 +1115,7 @@ class ChaosCatcherApp(tk.Tk):
         idx = sel[0]
         data = self.store.load()
         water = data.get("water", [])
-        water_sorted = list(reversed(water))
+        water_sorted = sorted(water, key=lambda w: str(w.get("ts", "")), reverse=True)
         if idx < 0 or idx >= len(water_sorted):
             return
         target = water_sorted[idx]
