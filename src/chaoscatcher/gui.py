@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import json
 import os
 import sys
 import tkinter as tk
@@ -214,6 +216,8 @@ class Store:
         if not isinstance(d.get("daily_logs"), dict):
             d["daily_logs"] = {}
 
+        d.setdefault("focus_sessions", [])
+
         return d
 
     def save(self, data: dict[str, Any]) -> None:
@@ -229,6 +233,13 @@ class ChaosCatcherApp(tk.Tk):
 
         self._graph_redraw_job: str | None = None
         self._graph_tooltip: tk.Toplevel | None = None
+
+        self._focus_running: bool = False
+        self._focus_job: str | None = None
+        self._focus_phase: str = "work"  # "work" | "short_break" | "long_break"
+        self._focus_session_count: int = 0  # completed work sessions this cycle
+        self._focus_seconds_left: int = 25 * 60
+        self._focus_session_start_ts: str | None = None  # ts when current work session started
 
         self._build_header()
         self._build_tabs()
@@ -339,18 +350,21 @@ class ChaosCatcherApp(tk.Tk):
         self.tab_water = ttk.Frame(self.nb, padding=10)
         self.tab_stats = ttk.Frame(self.nb, padding=10)
         self.tab_export = ttk.Frame(self.nb, padding=10)
+        self.tab_focus = ttk.Frame(self.nb, padding=10)
 
         self.nb.add(self.tab_med, text="Medication")
         self.nb.add(self.tab_mood, text="Mood")
         self.nb.add(self.tab_water, text="Water")
         self.nb.add(self.tab_stats, text="Stats")
         self.nb.add(self.tab_export, text="Export")
+        self.nb.add(self.tab_focus, text="Focus")
 
         self._build_med_tab()
         self._build_mood_tab()
         self._build_water_tab()
         self._build_stats_tab()
         self._build_export_tab()
+        self._build_focus_tab()
 
     # -------- Helpers --------
 
@@ -1921,6 +1935,345 @@ class ChaosCatcherApp(tk.Tk):
             return
 
         self.export_status.set(f"Saved: {path}")
+
+    # -------------------------
+    # Focus / Pomodoro tab
+    # -------------------------
+
+    def _build_focus_tab(self) -> None:
+        left = ttk.Frame(self.tab_focus)
+        right = ttk.Frame(self.tab_focus)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="Focus / Pomodoro", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+
+        ttk.Label(left, text="What are you working on?").pack(anchor="w")
+        self.focus_task = tk.StringVar()
+        ttk.Entry(left, textvariable=self.focus_task, width=32).pack(anchor="w", fill="x", pady=(0, 12))
+
+        # --- Timer display ---
+        timer_frame = ttk.LabelFrame(left, text="Timer", padding=10)
+        timer_frame.pack(fill="x", pady=(0, 8))
+
+        self._focus_phase_var = tk.StringVar(value="Work")
+        ttk.Label(timer_frame, textvariable=self._focus_phase_var, font=("TkDefaultFont", 11, "bold")).pack()
+
+        self._focus_time_var = tk.StringVar(value="25:00")
+        ttk.Label(timer_frame, textvariable=self._focus_time_var, font=("TkDefaultFont", 36, "bold")).pack()
+
+        self._focus_session_var = tk.StringVar(value="Session 0/4")
+        ttk.Label(timer_frame, textvariable=self._focus_session_var, foreground="#666").pack()
+
+        # --- Buttons ---
+        btn_row = ttk.Frame(left)
+        btn_row.pack(fill="x", pady=(0, 12))
+
+        self._focus_btn_var = tk.StringVar(value="▶ Start")
+        ttk.Button(btn_row, textvariable=self._focus_btn_var, command=self._safe_cmd(self._focus_start_pause)).pack(
+            side="left", expand=True, fill="x", padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="⏭ Skip", command=self._safe_cmd(self._focus_skip)).pack(
+            side="left", expand=True, fill="x", padx=(0, 4)
+        )
+        ttk.Button(btn_row, text="↺ Reset", command=self._safe_cmd(self._focus_reset)).pack(
+            side="left", expand=True, fill="x"
+        )
+
+        # --- Settings ---
+        ttk.Separator(left).pack(fill="x", pady=(0, 8))
+        ttk.Label(left, text="Settings", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 4))
+
+        self.focus_work_min = tk.IntVar(value=25)
+        self.focus_short_break_min = tk.IntVar(value=5)
+        self.focus_long_break_min = tk.IntVar(value=15)
+        self.focus_sessions_before_long = tk.IntVar(value=4)
+
+        grid = ttk.Frame(left)
+        grid.pack(fill="x")
+        for row, (label, var, lo, hi) in enumerate(
+            [
+                ("Work (min):", self.focus_work_min, 1, 60),
+                ("Short break (min):", self.focus_short_break_min, 1, 30),
+                ("Long break (min):", self.focus_long_break_min, 1, 60),
+                ("Sessions/long break:", self.focus_sessions_before_long, 1, 10),
+            ]
+        ):
+            ttk.Label(grid, text=label).grid(row=row, column=0, sticky="w", pady=2)
+            ttk.Spinbox(grid, from_=lo, to=hi, textvariable=var, width=5).grid(
+                row=row, column=1, sticky="w", padx=(6, 0), pady=2
+            )
+
+        ttk.Button(left, text="Apply settings (resets timer)", command=self._safe_cmd(self._focus_reset)).pack(
+            fill="x", pady=(8, 0)
+        )
+
+        # --- Right: session log ---
+        ttk.Separator(right).pack(fill="x", pady=(0, 8))
+        ttk.Label(right, text="Focus Session Log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+
+        self.focus_list = tk.Listbox(right, height=20)
+        self.focus_list.pack(fill="both", expand=True, pady=8)
+
+        export_row = ttk.Frame(right)
+        export_row.pack(fill="x")
+        ttk.Button(export_row, text="Export CSV", command=self._safe_cmd(self._focus_export_csv)).pack(
+            side="left", padx=(0, 6)
+        )
+        ttk.Button(export_row, text="Export JSON", command=self._safe_cmd(self._focus_export_json)).pack(side="left")
+
+        self._refresh_focus_list()
+
+    # --- Timer helpers ---
+
+    def _focus_seconds_for_phase(self) -> int:
+        if self._focus_phase == "work":
+            return int(self.focus_work_min.get()) * 60
+        if self._focus_phase == "short_break":
+            return int(self.focus_short_break_min.get()) * 60
+        return int(self.focus_long_break_min.get()) * 60
+
+    def _focus_phase_label(self) -> str:
+        if self._focus_phase == "work":
+            return "Work"
+        if self._focus_phase == "short_break":
+            return "Short Break"
+        return "Long Break"
+
+    def _focus_update_display(self) -> None:
+        mins, secs = divmod(max(0, self._focus_seconds_left), 60)
+        self._focus_time_var.set(f"{mins:02d}:{secs:02d}")
+
+    def _focus_update_session_display(self) -> None:
+        sessions_before = int(self.focus_sessions_before_long.get())
+        self._focus_phase_var.set(self._focus_phase_label())
+        self._focus_session_var.set(f"Session {self._focus_session_count}/{sessions_before}")
+
+    # --- Timer actions ---
+
+    def _focus_start_pause(self) -> None:
+        if self._focus_running:
+            self._focus_running = False
+            if self._focus_job:
+                try:
+                    self.after_cancel(self._focus_job)
+                except Exception:
+                    pass
+                self._focus_job = None
+            self._focus_btn_var.set("▶ Start")
+        else:
+            if self._focus_phase == "work" and self._focus_session_start_ts is None:
+                self._focus_session_start_ts = _now_local().isoformat(timespec="seconds")
+            self._focus_running = True
+            self._focus_btn_var.set("⏸ Pause")
+            self._focus_job = self.after(1000, self._focus_tick)
+
+    def _focus_tick(self) -> None:
+        if not self._focus_running:
+            return
+        self._focus_seconds_left -= 1
+        self._focus_update_display()
+        if self._focus_seconds_left <= 0:
+            self._focus_complete_phase()
+        else:
+            self._focus_job = self.after(1000, self._focus_tick)
+
+    def _focus_complete_phase(self) -> None:
+        self._focus_running = False
+        self._focus_job = None
+        self.bell()
+
+        if self._focus_phase == "work":
+            self._focus_session_count += 1
+            self._focus_log_session(completed=True)
+            self._focus_session_start_ts = None
+
+            sessions_before = int(self.focus_sessions_before_long.get())
+            if self._focus_session_count >= sessions_before:
+                self._focus_phase = "long_break"
+                self._focus_session_count = 0
+            else:
+                self._focus_phase = "short_break"
+
+            # Auto-start the break
+            self._focus_seconds_left = self._focus_seconds_for_phase()
+            self._focus_update_display()
+            self._focus_update_session_display()
+            self._focus_running = True
+            self._focus_btn_var.set("⏸ Pause")
+            self._focus_job = self.after(1000, self._focus_tick)
+        else:
+            # Break done — return to work, don't auto-start
+            self._focus_phase = "work"
+            self._focus_seconds_left = self._focus_seconds_for_phase()
+            self._focus_update_display()
+            self._focus_update_session_display()
+            self._focus_btn_var.set("▶ Start")
+
+        self._refresh_focus_list()
+
+    def _focus_skip(self) -> None:
+        if self._focus_job:
+            try:
+                self.after_cancel(self._focus_job)
+            except Exception:
+                pass
+            self._focus_job = None
+        self._focus_running = False
+
+        if self._focus_phase == "work":
+            if self._focus_session_start_ts is not None:
+                self._focus_log_session(completed=False)
+                self._focus_session_start_ts = None
+            self._focus_phase = "short_break"
+        else:
+            self._focus_phase = "work"
+
+        self._focus_seconds_left = self._focus_seconds_for_phase()
+        self._focus_btn_var.set("▶ Start")
+        self._focus_update_display()
+        self._focus_update_session_display()
+        self._refresh_focus_list()
+
+    def _focus_reset(self) -> None:
+        if self._focus_job:
+            try:
+                self.after_cancel(self._focus_job)
+            except Exception:
+                pass
+            self._focus_job = None
+        self._focus_running = False
+
+        if self._focus_phase == "work" and self._focus_session_start_ts is not None:
+            self._focus_log_session(completed=False)
+            self._focus_session_start_ts = None
+
+        self._focus_phase = "work"
+        self._focus_session_count = 0
+        self._focus_seconds_left = int(self.focus_work_min.get()) * 60
+        self._focus_btn_var.set("▶ Start")
+        self._focus_update_display()
+        self._focus_update_session_display()
+        self._refresh_focus_list()
+
+    # --- Session logging ---
+
+    def _focus_log_session(self, completed: bool) -> None:
+        if self._focus_session_start_ts is None:
+            return
+
+        full_secs = int(self.focus_work_min.get()) * 60
+        if completed:
+            duration_min = int(self.focus_work_min.get())
+        else:
+            elapsed_secs = full_secs - self._focus_seconds_left
+            if elapsed_secs < 60:
+                return  # don't log sessions under 1 minute
+            duration_min = elapsed_secs // 60
+
+        entry: dict[str, Any] = {
+            "ts": self._focus_session_start_ts,
+            "task": self.focus_task.get().strip(),
+            "type": "work",
+            "duration_min": duration_min,
+            "completed": completed,
+        }
+        data = self.store.load()
+        data.setdefault("focus_sessions", []).append(entry)
+        self.store.save(data)
+
+    # --- Session list ---
+
+    def _refresh_focus_list(self) -> None:
+        if not hasattr(self, "focus_list"):
+            return
+        self.focus_list.delete(0, tk.END)
+        data = self.store.load()
+        sessions = sorted(
+            data.get("focus_sessions", []),
+            key=lambda s: str(s.get("ts", "")),
+            reverse=True,
+        )
+        for s in sessions:
+            dt = _dt_from_entry_ts(str(s.get("ts", "")))
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(s.get("ts", ""))
+            task = str(s.get("task", "")).strip() or "—"
+            dur = s.get("duration_min", 0)
+            done = "✓" if s.get("completed") else "✗"
+            self.focus_list.insert(tk.END, f"{when}  {done} {dur}m — {task}")
+
+    # --- Export ---
+
+    _FOCUS_CSV_FIELDS = ["ts", "date", "time", "task", "type", "duration_min", "completed"]
+
+    def _focus_export_csv(self) -> None:
+        data = self.store.load()
+        sessions = data.get("focus_sessions", [])
+
+        rows: list[dict[str, Any]] = []
+        for s in sessions:
+            ts = str(s.get("ts", "")).strip()
+            dt = _dt_from_entry_ts(ts)
+            rows.append(
+                {
+                    "ts": ts,
+                    "date": dt.date().isoformat() if dt else "",
+                    "time": dt.strftime("%H:%M") if dt else "",
+                    "task": str(s.get("task", "")).strip(),
+                    "type": str(s.get("type", "work")),
+                    "duration_min": s.get("duration_min", 0),
+                    "completed": s.get("completed", False),
+                }
+            )
+        rows.sort(key=lambda r: str(r["ts"]), reverse=True)
+
+        default_name = f"focus-sessions-{_now_local().date().isoformat()}.csv"
+        path = filedialog.asksaveasfilename(
+            title="Export Focus Sessions CSV",
+            defaultextension=".csv",
+            initialfile=default_name,
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            out = Path(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with out.open("w", newline="", encoding="utf-8") as f:
+                w = csv.DictWriter(f, fieldnames=self._FOCUS_CSV_FIELDS, quoting=csv.QUOTE_MINIMAL)
+                w.writeheader()
+                w.writerows(rows)
+            messagebox.showinfo("Exported", f"Saved {len(rows)} sessions → {path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
+
+    def _focus_export_json(self) -> None:
+        data = self.store.load()
+        sessions = sorted(
+            data.get("focus_sessions", []),
+            key=lambda s: str(s.get("ts", "")),
+            reverse=True,
+        )
+
+        default_name = f"focus-sessions-{_now_local().date().isoformat()}.json"
+        path = filedialog.asksaveasfilename(
+            title="Export Focus Sessions JSON",
+            defaultextension=".json",
+            initialfile=default_name,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            out = Path(path)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps({"focus_sessions": sessions}, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+            out.write_text(payload, encoding="utf-8")
+            messagebox.showinfo("Exported", f"Saved {len(sessions)} sessions → {path}")
+        except Exception as e:
+            messagebox.showerror("Export failed", str(e))
 
 
 # -------------------------
