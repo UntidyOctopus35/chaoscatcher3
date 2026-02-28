@@ -1144,6 +1144,34 @@ class ChaosCatcherApp(tk.Tk):
 
         return total
 
+    def _water_daily_totals(self, days: int) -> dict[str, int]:
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+
+        data = self.store.load()
+        water = data.get("water", [])
+
+        by_day: dict[str, int] = {}
+
+        for w in water:
+            dt = _dt_from_entry_ts(str(w.get("ts", "")))
+            if not dt or dt < cutoff:
+                continue
+
+            oz = w.get("oz")
+            n = 0
+            if isinstance(oz, (int, float)):
+                n = int(oz)
+            elif isinstance(oz, str) and oz.strip().isdigit():
+                n = int(oz.strip())
+
+            if n <= 0:
+                continue
+
+            day = dt.date().isoformat()
+            by_day[day] = by_day.get(day, 0) + n
+
+        return by_day
+
     def _refresh_water_today_chip(self) -> None:
         if not hasattr(self, "water_today_chip"):
             return
@@ -1321,6 +1349,32 @@ class ChaosCatcherApp(tk.Tk):
         days_sorted = sorted(by_day.keys())
         avgs = [sum(by_day[d]) / len(by_day[d]) for d in days_sorted]
         return days_sorted, avgs
+
+    def _analyze_water_vs_mood(self, days: int = 30) -> str:
+        water_by_day = self._water_daily_totals(days)
+        mood_days, mood_avgs = self._mood_daily_avgs(days)
+
+        xs: list[float] = []
+        ys: list[float] = []
+
+        for d, mood in zip(mood_days, mood_avgs):
+            if d in water_by_day:
+                xs.append(float(water_by_day[d]))
+                ys.append(float(mood))
+
+        if len(xs) < 3:
+            return "Not enough overlapping water + mood data yet."
+
+        r = _pearson_corr(xs, ys)
+
+        if r is None:
+            return "Could not compute correlation."
+
+        if r > 0.4:
+            return f"Higher hydration appears linked to better mood (r={r:.2f})."
+        if r < -0.4:
+            return f"Unexpected pattern: more water linked to lower mood (r={r:.2f})."
+        return f"Weak or no clear hydration–mood relationship (r={r:.2f})."
 
     def _stats_mood_daily(self) -> None:
         days = int(self.stats_days.get())
@@ -1587,6 +1641,7 @@ class ChaosCatcherApp(tk.Tk):
             trend_line = "Trend: Not enough data for trend.\n"
 
         sleep_insight = self._analyze_sleep_vs_mood(days=30)
+        water_insight = self._analyze_water_vs_mood(days if days is not None else 30)
 
         alerts_text = self._detect_mood_alerts(
             lookback_days=90,
@@ -1607,6 +1662,8 @@ class ChaosCatcherApp(tk.Tk):
             f"Min / Max: {mn} / {mx}\n"
             f"{trend_line}\n"
             f"{sleep_insight}\n"
+            "\nHydration Insight\n----------------------------\n"
+            f"{water_insight}\n"
         )
 
         self._analysis_write(base_text + "\n" + alerts_text)
