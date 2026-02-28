@@ -1985,8 +1985,12 @@ class ChaosCatcherApp(tk.Tk):
             side="left", expand=True, fill="x"
         )
 
+        ttk.Button(
+            left, text="Test popup", command=self._safe_cmd(lambda: self._focus_notify("Test", "Popup is working!"))
+        ).pack(fill="x", pady=(4, 0))
+
         # --- Settings ---
-        ttk.Separator(left).pack(fill="x", pady=(0, 8))
+        ttk.Separator(left).pack(fill="x", pady=(8, 8))
         ttk.Label(left, text="Settings", font=("TkDefaultFont", 10, "bold")).pack(anchor="w", pady=(0, 4))
 
         self.focus_work_min = tk.IntVar(value=25)
