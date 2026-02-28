@@ -173,6 +173,20 @@ def _trend_label_from_slope(slope: float, stable_band: float = 0.02) -> str:
     return "Stable"
 
 
+def _pearson_corr(xs: list[float], ys: list[float]) -> float | None:
+    n = len(xs)
+    if n < 3:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    num = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    denx = sum((x - mx) ** 2 for x in xs)
+    deny = sum((y - my) ** 2 for y in ys)
+    if denx <= 0 or deny <= 0:
+        return None
+    return num / ((denx**0.5) * (deny**0.5))
+
+
 # -------------------------
 # Vyvanse phase shading
 # -------------------------
@@ -204,6 +218,7 @@ MOOD_LINE_RED = "#b00020"
 MOOD_LINE_YELLOW = "#b26a00"
 MOOD_LINE_GREEN = "#0b6b2a"
 
+
 # -------------------------
 # Data access
 # -------------------------
@@ -226,6 +241,15 @@ class Store:
         d.setdefault("daily_logs", {})
         d.setdefault("water", [])
         d.setdefault("daily_med_list", _default_daily_med_list())
+
+        # Water goals:
+        # - global default goal (oz)
+        # - per-day overrides stored in daily_logs[YYYY-MM-DD]["water_goal_oz"]
+        d.setdefault("water_goal_oz", 80)
+
+        if not isinstance(d.get("daily_logs"), dict):
+            d["daily_logs"] = {}
+
         return d
 
     def save(self, data: dict[str, Any]) -> None:
@@ -281,6 +305,260 @@ class ChaosCatcherApp(tk.Tk):
         return str(s or "").strip().lower()
 
     # -------------------------
+    # Header
+    # -------------------------
+
+    def _build_header(self) -> None:
+        # Phase bar (simple + reliable shading indicator)
+        self.vy_phase_bar = tk.Frame(self, height=6, bg="#94a3b8")
+        self.vy_phase_bar.pack(fill="x", side="top")
+
+        frm = ttk.Frame(self, padding=10)
+        frm.pack(fill="x")
+
+        left = ttk.Frame(frm)
+        left.pack(side="left", fill="x", expand=True)
+
+        right = ttk.Frame(frm)
+        right.pack(side="right")
+
+        ttk.Label(left, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(side="left")
+
+        self.path_var = tk.StringVar(value=str(self.store.data_path))
+        ttk.Label(left, textvariable=self.path_var, foreground="#666").pack(side="left", padx=12)
+
+        btns = ttk.Frame(right)
+        btns.pack(side="left")
+
+        ttk.Button(btns, text="Refresh", command=self._safe_cmd(self._refresh_all_lists)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Open Data Folder", command=self._safe_cmd(self._open_data_folder)).pack(side="left", padx=4)
+        ttk.Button(btns, text="Log Vyvanse", command=self._safe_cmd(self._vyvanse_quick_log)).pack(side="left", padx=4)
+
+        # Vyvanse arc chip (click for details)
+        self.vy_arc_label = ttk.Label(right, text="Vyvanse: —", foreground="#444", cursor="hand2")
+        self.vy_arc_label.pack(side="left", padx=(12, 0))
+        self.vy_arc_label.bind("<Button-1>", lambda _e: self._show_vyvanse_popup())
+
+    def _open_data_folder(self) -> None:
+        p = self.store.data_path
+        folder = p.parent
+        try:
+            if sys.platform.startswith("win"):
+                os.startfile(str(folder))  # type: ignore[attr-defined]
+            elif sys.platform == "darwin":
+                import subprocess
+
+                subprocess.run(["open", str(folder)], check=False)
+            else:
+                import subprocess
+
+                subprocess.run(["xdg-open", str(folder)], check=False)
+            return
+        except Exception:
+            pass
+        messagebox.showinfo("Data location", f"Data file:\n{p}\n\nFolder:\n{folder}")
+
+    # -------------------------
+    # Tabs
+    # -------------------------
+
+    def _build_tabs(self) -> None:
+        self.nb = ttk.Notebook(self)
+        self.nb.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.tab_med = ttk.Frame(self.nb, padding=10)
+        self.tab_mood = ttk.Frame(self.nb, padding=10)
+        self.tab_water = ttk.Frame(self.nb, padding=10)
+        self.tab_stats = ttk.Frame(self.nb, padding=10)
+        self.tab_export = ttk.Frame(self.nb, padding=10)
+
+        self.nb.add(self.tab_med, text="Medication")
+        self.nb.add(self.tab_mood, text="Mood")
+        self.nb.add(self.tab_water, text="Water")
+        self.nb.add(self.tab_stats, text="Stats")
+        self.nb.add(self.tab_export, text="Export")
+
+        self._build_med_tab()
+        self._build_mood_tab()
+        self._build_water_tab()
+        self._build_stats_tab()
+        self._build_export_tab()
+
+    # -------- Helpers --------
+
+    def _labeled_entry(self, parent: ttk.Frame, label: str, var: tk.StringVar) -> None:
+        ttk.Label(parent, text=label).pack(anchor="w")
+        ttk.Entry(parent, textvariable=var, width=30).pack(anchor="w", pady=(0, 8))
+
+    def _today_key(self) -> str:
+        return _now_local().date().isoformat()
+
+    def _refresh_all_lists(self) -> None:
+        self._refresh_med_list()
+        self._refresh_mood_list()
+        self._refresh_water_list()
+        self._draw_mood_graph()
+        self._refresh_vyvanse_chip()
+        self._refresh_water_today_chip()
+
+    def _write_stats(self, text: str) -> None:
+        if not hasattr(self, "stats_out"):
+            return
+        self.stats_out.delete("1.0", tk.END)
+        self.stats_out.insert(tk.END, text)
+
+    def _analysis_write(self, text: str) -> None:
+        if not hasattr(self, "analysis_out"):
+            return
+        self.analysis_out.delete("1.0", tk.END)
+        self.analysis_out.insert(tk.END, text)
+
+    # -------------------------
+    # Medication tab
+    # -------------------------
+
+    def _build_med_tab(self) -> None:
+        left = ttk.Frame(self.tab_med)
+        right = ttk.Frame(self.tab_med)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+
+        self.med_name = tk.StringVar()
+        self.med_dose = tk.StringVar()
+        self.med_time = tk.StringVar(value="")
+        self.med_notes = tk.StringVar()
+
+        self._labeled_entry(left, "Name", self.med_name)
+        self._labeled_entry(left, "Dose", self.med_dose)
+        self._labeled_entry(left, "Time (e.g. today 7:34am)", self.med_time)
+        self._labeled_entry(left, "Notes (optional)", self.med_notes)
+
+        ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
+        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(fill="x", pady=(6, 0))
+
+        ttk.Separator(right).pack(fill="x", pady=(0, 8))
+        ttk.Label(right, text="Medication log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
+
+        self.med_list = tk.Listbox(right, height=20)
+        self.med_list.pack(fill="both", expand=True, pady=8)
+
+        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._med_delete_selected)).pack(anchor="e")
+
+    def _med_add(self) -> None:
+        name = self.med_name.get().strip()
+        dose = self.med_dose.get().strip()
+        t = self.med_time.get().strip()
+        notes = self.med_notes.get().strip()
+
+        if not name:
+            messagebox.showerror("Missing name", "Please enter a medication name.")
+            return
+        if not dose:
+            messagebox.showerror("Missing dose", "Please enter a dose (e.g. 50 mg).")
+            return
+
+        try:
+            ts = _parse_ts(t)
+        except Exception as e:
+            messagebox.showerror("Bad time", str(e))
+            return
+
+        entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
+        if notes:
+            entry["notes"] = notes
+
+        data = self.store.load()
+        data.setdefault("medications", []).append(entry)
+        self.store.save(data)
+
+        self.med_name.set("")
+        self.med_dose.set("")
+        self.med_time.set("")
+        self.med_notes.set("")
+
+        self._refresh_med_list()
+        self._refresh_vyvanse_chip()
+
+    def _med_take_all(self) -> None:
+        data = self.store.load()
+        template = data.get("daily_med_list", [])
+
+        if not isinstance(template, list) or not template:
+            messagebox.showinfo(
+                "Daily meds list empty",
+                "No daily meds are configured yet.\n\n"
+                "Edit 'daily_med_list' in your data JSON (or we can add a GUI editor).",
+            )
+            return
+
+        ts = _now_local().isoformat(timespec="seconds")
+        meds = data.setdefault("medications", [])
+
+        added = 0
+        for item in template:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name", "")).strip()
+            dose = str(item.get("dose", "")).strip()
+            notes = str(item.get("notes", "")).strip()
+
+            if not name or not dose:
+                continue
+
+            entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
+            if notes:
+                entry["notes"] = notes
+
+            meds.append(entry)
+            added += 1
+
+        self.store.save(data)
+        self._refresh_med_list()
+        self._refresh_vyvanse_chip()
+        messagebox.showinfo("Logged", f"Added {added} meds at {_fmt_time(_now_local())}.")
+
+    def _med_delete_selected(self) -> None:
+        sel = self.med_list.curselection()
+        if not sel:
+            return
+        if not messagebox.askyesno("Confirm delete", "Delete selected medication entry? This cannot be undone."):
+            return
+
+        idx = sel[0]
+        data = self.store.load()
+        meds = data.get("medications", [])
+        meds_sorted = list(reversed(meds))
+        if idx < 0 or idx >= len(meds_sorted):
+            return
+        target = meds_sorted[idx]
+
+        for i, m in enumerate(meds):
+            if m == target:
+                meds.pop(i)
+                break
+
+        data["medications"] = meds
+        self.store.save(data)
+        self._refresh_med_list()
+        self._refresh_vyvanse_chip()
+
+    def _refresh_med_list(self) -> None:
+        self.med_list.delete(0, tk.END)
+        data = self.store.load()
+        meds = list(reversed(data.get("medications", [])))
+
+        for m in meds:
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(m.get("ts", ""))
+            notes = m.get("notes", "")
+            line = f"{when} — {m.get('name','')} {m.get('dose','')}"
+            if notes:
+                line += f"  |  {notes}"
+            self.med_list.insert(tk.END, line)
+
+    # -------------------------
     # Vyvanse arc helpers
     # -------------------------
 
@@ -304,7 +582,6 @@ class ChaosCatcherApp(tk.Tk):
         return best_entry, best_dt
 
     def _vyvanse_last_dose_guess(self) -> str:
-        """Try to reuse the last logged Vyvanse dose, fallback to 50 mg."""
         entry, _dt = self._find_latest_vyvanse_entry()
         if entry:
             d = str(entry.get("dose", "")).strip()
@@ -339,7 +616,6 @@ class ChaosCatcherApp(tk.Tk):
         delta = now - dose_dt
         t_min = delta.total_seconds() / 60.0
         phase = self._vyvanse_arc_phase(t_min)
-
         t_pretty = self._fmt_hm(max(0, int(round(t_min))))
         chip = f"Vyvanse: {phase} (T+{t_pretty})"
         return chip, phase, t_min
@@ -415,13 +691,6 @@ class ChaosCatcherApp(tk.Tk):
         self.after(60_000, self._tick_vyvanse_chip)
 
     def _vyvanse_quick_log(self) -> None:
-        """
-        Quick Vyvanse logger:
-        - Always logs name='Vyvanse' so the header chip will work.
-        - Asks dose (default = last dose or 50 mg)
-        - Asks time (blank = now, supports 'today 7:34am')
-        - Optional notes
-        """
         default_dose = self._vyvanse_last_dose_guess()
 
         dose = simpledialog.askstring(
@@ -467,290 +736,9 @@ class ChaosCatcherApp(tk.Tk):
         self._refresh_med_list()
         self._refresh_vyvanse_chip()
 
-    # -------- Header --------
-
-    def _build_header(self) -> None:
-        # Phase bar (simple + reliable shading indicator)
-        self.vy_phase_bar = tk.Frame(self, height=6, bg="#94a3b8")
-        self.vy_phase_bar.pack(fill="x", side="top")
-
-        frm = ttk.Frame(self, padding=10)
-        frm.pack(fill="x")
-
-        left = ttk.Frame(frm)
-        left.pack(side="left", fill="x", expand=True)
-
-        right = ttk.Frame(frm)
-        right.pack(side="right")
-
-        ttk.Label(left, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(side="left")
-
-        self.path_var = tk.StringVar(value=str(self.store.data_path))
-        ttk.Label(left, textvariable=self.path_var, foreground="#666").pack(side="left", padx=12)
-
-        btns = ttk.Frame(right)
-        btns.pack(side="left")
-
-        ttk.Button(btns, text="Refresh", command=self._safe_cmd(self._refresh_all_lists)).pack(side="left", padx=4)
-        ttk.Button(btns, text="Open Data Folder", command=self._safe_cmd(self._open_data_folder)).pack(side="left", padx=4)
-        ttk.Button(btns, text="Log Vyvanse", command=self._safe_cmd(self._vyvanse_quick_log)).pack(side="left", padx=4)
-
-        # Vyvanse arc chip (click for details)
-        self.vy_arc_label = ttk.Label(right, text="Vyvanse: —", foreground="#444", cursor="hand2")
-        self.vy_arc_label.pack(side="left", padx=(12, 0))
-        self.vy_arc_label.bind("<Button-1>", lambda _e: self._show_vyvanse_popup())
-
-    def _open_data_folder(self) -> None:
-        """
-        Tries to open the folder containing the data file in the OS file manager.
-        Falls back to an info dialog if it can't.
-        """
-        p = self.store.data_path
-        folder = p.parent
-
-        try:
-            if sys.platform.startswith("win"):
-                os.startfile(str(folder))  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
-                import subprocess
-
-                subprocess.run(["open", str(folder)], check=False)
-            else:
-                import subprocess
-
-                subprocess.run(["xdg-open", str(folder)], check=False)
-            return
-        except Exception:
-            pass
-
-        messagebox.showinfo("Data location", f"Data file:\n{p}\n\nFolder:\n{folder}")
-
-    # -------- Tabs --------
-
-    def _build_tabs(self) -> None:
-        self.nb = ttk.Notebook(self)
-        self.nb.pack(fill="both", expand=True, padx=10, pady=10)
-
-        self.tab_med = ttk.Frame(self.nb, padding=10)
-        self.tab_mood = ttk.Frame(self.nb, padding=10)
-        self.tab_stats = ttk.Frame(self.nb, padding=10)
-        self.tab_export = ttk.Frame(self.nb, padding=10)
-
-        self.nb.add(self.tab_med, text="Medication")
-        self.nb.add(self.tab_mood, text="Mood")
-        self.nb.add(self.tab_stats, text="Stats")
-        self.nb.add(self.tab_export, text="Export")
-
-        self._build_med_tab()
-        self._build_mood_tab()
-        self._build_stats_tab()
-        self._build_export_tab()
-
-    # -------- Export tab --------
-
-    def _build_export_tab(self) -> None:
-        box = ttk.Frame(self.tab_export)
-        box.pack(fill="both", expand=True)
-
-        ttk.Label(box, text="Export", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
-        ttk.Label(
-            box,
-            text="Exports your data file as-is (JSON). Useful for backups or sharing with Future You.",
-            foreground="#555",
-            wraplength=760,
-            justify="left",
-        ).pack(anchor="w", pady=(0, 8))
-
-        ttk.Button(box, text="Save JSON As…", command=self._safe_cmd(self._export_json_as)).pack(anchor="w")
-
-        self.export_status = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.export_status, foreground="#555").pack(anchor="w", pady=(8, 0))
-
-    def _export_json_as(self) -> None:
-        data = self.store.load()
-        default_name = f"chaoscatcher-export-{_now_local().date().isoformat()}.json"
-
-        path = filedialog.asksaveasfilename(
-            title="Save ChaosCatcher JSON",
-            defaultextension=".json",
-            initialfile=default_name,
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
-        )
-        if not path:
-            return
-
-        try:
-            save_json(Path(path), data)
-        except Exception as e:
-            messagebox.showerror("Export failed", f"Could not export JSON:\n{e}")
-            return
-
-        self.export_status.set(f"Saved: {path}")
-
-    # -------- Helpers --------
-
-    def _labeled_entry(self, parent: ttk.Frame, label: str, var: tk.StringVar) -> None:
-        ttk.Label(parent, text=label).pack(anchor="w")
-        ttk.Entry(parent, textvariable=var, width=30).pack(anchor="w", pady=(0, 8))
-
-    def _refresh_all_lists(self) -> None:
-        self._refresh_med_list()
-        self._refresh_mood_list()
-        self._draw_mood_graph()
-        self._refresh_vyvanse_chip()
-
-    # -------- Medication tab --------
-
-    def _build_med_tab(self) -> None:
-        left = ttk.Frame(self.tab_med)
-        right = ttk.Frame(self.tab_med)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        right.pack(side="right", fill="both", expand=True)
-
-        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
-
-        self.med_name = tk.StringVar()
-        self.med_dose = tk.StringVar()
-        self.med_time = tk.StringVar(value="")
-        self.med_notes = tk.StringVar()
-
-        self._labeled_entry(left, "Name", self.med_name)
-        self._labeled_entry(left, "Dose", self.med_dose)
-        self._labeled_entry(left, "Time (e.g. today 7:34am)", self.med_time)
-        self._labeled_entry(left, "Notes (optional)", self.med_notes)
-
-        ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
-        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(fill="x", pady=(6, 0))
-
-        ttk.Separator(right).pack(fill="x", pady=(0, 8))
-        ttk.Label(right, text="Medication log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-
-        self.med_list = tk.Listbox(right, height=20)
-        self.med_list.pack(fill="both", expand=True, pady=8)
-
-        ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._med_delete_selected)).pack(anchor="e")
-
-    # -------- Medication actions --------
-
-    def _med_add(self) -> None:
-        name = self.med_name.get().strip()
-        dose = self.med_dose.get().strip()
-        t = self.med_time.get().strip()
-        notes = self.med_notes.get().strip()
-
-        if not name:
-            messagebox.showerror("Missing name", "Please enter a medication name.")
-            return
-        if not dose:
-            messagebox.showerror("Missing dose", "Please enter a dose (e.g. 50 mg).")
-            return
-
-        try:
-            ts = _parse_ts(t)  # blank/today/now supported
-        except Exception as e:
-            messagebox.showerror("Bad time", str(e))
-            return
-
-        entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
-        if notes:
-            entry["notes"] = notes
-
-        data = self.store.load()
-        meds = data.setdefault("medications", [])
-        meds.append(entry)
-        self.store.save(data)
-
-        # clear inputs
-        self.med_name.set("")
-        self.med_dose.set("")
-        self.med_time.set("")
-        self.med_notes.set("")
-
-        self._refresh_med_list()
-        self._refresh_vyvanse_chip()
-
-    def _med_take_all(self) -> None:
-        """
-        Logs every item in data["daily_med_list"] as a medication entry at the current timestamp.
-        """
-        data = self.store.load()
-        template = data.get("daily_med_list", [])
-
-        if not isinstance(template, list) or not template:
-            messagebox.showinfo(
-                "Daily meds list empty",
-                "No daily meds are configured yet.\n\n"
-                "Edit 'daily_med_list' in your data JSON (or we can add a GUI editor).",
-            )
-            return
-
-        ts = _now_local().isoformat(timespec="seconds")
-        meds = data.setdefault("medications", [])
-
-        added = 0
-        for item in template:
-            if not isinstance(item, dict):
-                continue
-
-            name = str(item.get("name", "")).strip()
-            dose = str(item.get("dose", "")).strip()
-            notes = str(item.get("notes", "")).strip()
-
-            if not name or not dose:
-                continue
-
-            entry: dict[str, Any] = {"ts": ts, "name": name, "dose": dose}
-            if notes:
-                entry["notes"] = notes
-
-            meds.append(entry)
-            added += 1
-
-        self.store.save(data)
-        self._refresh_med_list()
-        self._refresh_vyvanse_chip()
-        messagebox.showinfo("Logged", f"Added {added} meds at {_fmt_time(_now_local())}.")
-
-    def _med_delete_selected(self) -> None:
-        sel = self.med_list.curselection()
-        if not sel:
-            return
-        if not messagebox.askyesno("Confirm delete", "Delete selected medication entry? This cannot be undone."):
-            return
-
-        idx = sel[0]
-        data = self.store.load()
-        meds = data.get("medications", [])
-        meds_sorted = list(reversed(meds))
-        if idx < 0 or idx >= len(meds_sorted):
-            return
-        target = meds_sorted[idx]
-
-        for i, m in enumerate(meds):
-            if m == target:
-                meds.pop(i)
-                break
-
-        data["medications"] = meds
-        self.store.save(data)
-        self._refresh_med_list()
-        self._refresh_vyvanse_chip()
-
-    def _refresh_med_list(self) -> None:
-        self.med_list.delete(0, tk.END)
-        data = self.store.load()
-        meds = list(reversed(data.get("medications", [])))
-
-        for m in meds:
-            dt = _dt_from_entry_ts(str(m.get("ts", "")))
-            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(m.get("ts", ""))
-            notes = m.get("notes", "")
-            line = f"{when} — {m.get('name','')} {m.get('dose','')}"
-            if notes:
-                line += f"  |  {notes}"
-            self.med_list.insert(tk.END, line)
-
-    # -------- Mood tab --------
+    # -------------------------
+    # Mood tab
+    # -------------------------
 
     def _build_mood_tab(self) -> None:
         left = ttk.Frame(self.tab_mood)
@@ -792,8 +780,6 @@ class ChaosCatcherApp(tk.Tk):
 
         ttk.Button(right, text="Delete selected (careful)", command=self._safe_cmd(self._mood_delete_selected)).pack(anchor="e")
 
-    # -------- Mood actions --------
-
     def _parse_tags(self, raw: str) -> list[str]:
         raw = raw.strip()
         if not raw:
@@ -821,7 +807,11 @@ class ChaosCatcherApp(tk.Tk):
             return
 
         t = self.mood_time.get().strip()
-        ts = _parse_ts(t)
+        try:
+            ts = _parse_ts(t)
+        except Exception as e:
+            messagebox.showerror("Bad time", str(e))
+            return
 
         entry: dict[str, Any] = {"ts": ts, "score": score}
 
@@ -849,8 +839,7 @@ class ChaosCatcherApp(tk.Tk):
             entry["sleep_deep_min"] = sd
 
         data = self.store.load()
-        moods = data.setdefault("moods", [])
-        moods.append(entry)
+        data.setdefault("moods", []).append(entry)
         self.store.save(data)
 
         self.mood_tags.set("")
@@ -913,7 +902,264 @@ class ChaosCatcherApp(tk.Tk):
                 line += f" | {notes}"
             self.mood_list.insert(tk.END, line)
 
-    # -------- Stats tab --------
+    # -------------------------
+    # Water goals (global default + per-day override)
+    # -------------------------
+
+    def _get_water_goal_for_day(self, day_key: str) -> int:
+        data = self.store.load()
+        daily_logs = data.get("daily_logs", {})
+        if isinstance(daily_logs, dict):
+            d = daily_logs.get(day_key)
+            if isinstance(d, dict):
+                g = d.get("water_goal_oz")
+                if isinstance(g, (int, float)):
+                    return int(g)
+                if isinstance(g, str) and g.strip().isdigit():
+                    return int(g.strip())
+
+        g2 = data.get("water_goal_oz", 80)
+        if isinstance(g2, (int, float)):
+            return int(g2)
+        if isinstance(g2, str) and g2.strip().isdigit():
+            return int(g2.strip())
+        return 80
+
+    def _set_water_goal_for_day(self, day_key: str, goal_oz: int) -> None:
+        data = self.store.load()
+        if goal_oz < 0 or goal_oz > 512:
+            raise ValueError("Goal must be a reasonable oz amount (0–512).")
+
+        logs = data.setdefault("daily_logs", {})
+        if not isinstance(logs, dict):
+            logs = {}
+            data["daily_logs"] = logs
+
+        day_obj = logs.get(day_key)
+        if not isinstance(day_obj, dict):
+            day_obj = {}
+            logs[day_key] = day_obj
+
+        day_obj["water_goal_oz"] = int(goal_oz)
+        self.store.save(data)
+
+    def _set_default_water_goal(self, goal_oz: int) -> None:
+        data = self.store.load()
+        if goal_oz < 0 or goal_oz > 512:
+            raise ValueError("Goal must be a reasonable oz amount (0–512).")
+        data["water_goal_oz"] = int(goal_oz)
+        self.store.save(data)
+
+    # -------------------------
+    # Water tab
+    # -------------------------
+
+    def _build_water_tab(self) -> None:
+        left = ttk.Frame(self.tab_water)
+        right = ttk.Frame(self.tab_water)
+        left.pack(side="left", fill="y", padx=(0, 10))
+        right.pack(side="right", fill="both", expand=True)
+
+        ttk.Label(left, text="Water", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+
+        # Quick add buttons
+        btnrow = ttk.Frame(left)
+        btnrow.pack(anchor="w", pady=(0, 8))
+
+        ttk.Button(btnrow, text="+8 oz", command=self._safe_cmd(lambda: self._water_quick_add(8))).pack(side="left", padx=(0, 6))
+        ttk.Button(btnrow, text="+12 oz", command=self._safe_cmd(lambda: self._water_quick_add(12))).pack(side="left", padx=(0, 6))
+        ttk.Button(btnrow, text="+16 oz", command=self._safe_cmd(lambda: self._water_quick_add(16))).pack(side="left")
+
+        ttk.Separator(left).pack(fill="x", pady=10)
+
+        # Daily goal controls (for today)
+        ttk.Label(left, text="Daily water goal (oz)").pack(anchor="w")
+
+        self.water_goal_oz = tk.StringVar(value=str(self._get_water_goal_for_day(self._today_key())))
+        goalrow = ttk.Frame(left)
+        goalrow.pack(anchor="w", pady=(0, 8), fill="x")
+
+        ttk.Entry(goalrow, textvariable=self.water_goal_oz, width=10).pack(side="left")
+        ttk.Button(goalrow, text="Set for today", command=self._safe_cmd(self._water_set_goal_today)).pack(side="left", padx=6)
+        ttk.Button(goalrow, text="Set as default", command=self._safe_cmd(self._water_set_goal_default)).pack(side="left")
+
+        ttk.Separator(left).pack(fill="x", pady=10)
+
+        # Custom add
+        self.water_oz = tk.StringVar(value="8")
+        self.water_time = tk.StringVar(value="")  # blank = now
+
+        self._labeled_entry(left, "Amount (oz)", self.water_oz)
+        self._labeled_entry(left, "Time (blank = now; e.g. today 2:10pm)", self.water_time)
+
+        ttk.Button(left, text="Add Water", command=self._safe_cmd(self._water_add)).pack(fill="x", pady=(8, 0))
+
+        # Right side: list + today chip
+        ttk.Separator(right).pack(fill="x", pady=(0, 8))
+
+        top = ttk.Frame(right)
+        top.pack(fill="x")
+
+        ttk.Label(top, text="Water log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(side="left")
+
+        self.water_today_chip = tk.StringVar(value="Today: 0 oz")
+        ttk.Label(top, textvariable=self.water_today_chip, foreground="#444").pack(side="right")
+
+        self.water_list = tk.Listbox(right, height=20)
+        self.water_list.pack(fill="both", expand=True, pady=8)
+
+        ttk.Button(
+            right,
+            text="Delete selected (careful)",
+            command=self._safe_cmd(self._water_delete_selected),
+        ).pack(anchor="e")
+
+    def _water_set_goal_today(self) -> None:
+        raw = self.water_goal_oz.get().strip()
+        try:
+            goal = int(float(raw))
+        except Exception:
+            messagebox.showerror("Bad goal", "Goal must be a number (oz). Example: 80.")
+            return
+        if goal < 0 or goal > 512:
+            messagebox.showerror("Bad goal", "Please enter a reasonable goal (0–512 oz).")
+            return
+
+        self._set_water_goal_for_day(self._today_key(), goal)
+        self._refresh_water_today_chip()
+
+    def _water_set_goal_default(self) -> None:
+        raw = self.water_goal_oz.get().strip()
+        try:
+            goal = int(float(raw))
+        except Exception:
+            messagebox.showerror("Bad goal", "Goal must be a number (oz). Example: 80.")
+            return
+        if goal < 0 or goal > 512:
+            messagebox.showerror("Bad goal", "Please enter a reasonable goal (0–512 oz).")
+            return
+
+        self._set_default_water_goal(goal)
+        # also set today's override to match (so the chip updates consistently)
+        self._set_water_goal_for_day(self._today_key(), goal)
+        self._refresh_water_today_chip()
+
+    def _water_quick_add(self, oz: int) -> None:
+        entry: dict[str, Any] = {"ts": _now_local().isoformat(timespec="seconds"), "oz": int(oz)}
+        data = self.store.load()
+        data.setdefault("water", []).append(entry)
+        self.store.save(data)
+        self._refresh_water_list()
+        self._refresh_water_today_chip()
+
+    def _water_add(self) -> None:
+        raw_oz = self.water_oz.get().strip()
+        raw_time = self.water_time.get().strip()
+
+        try:
+            oz = int(float(raw_oz))  # allows "8.0"
+        except Exception:
+            messagebox.showerror("Bad amount", "Water amount must be a number (oz). Example: 8 or 12.")
+            return
+
+        if oz <= 0 or oz > 256:
+            messagebox.showerror("Bad amount", "Please enter a reasonable oz amount (1–256).")
+            return
+
+        try:
+            ts = _parse_ts(raw_time)  # blank/today/now supported
+        except Exception as e:
+            messagebox.showerror("Bad time", str(e))
+            return
+
+        entry: dict[str, Any] = {"ts": ts, "oz": oz}
+
+        data = self.store.load()
+        data.setdefault("water", []).append(entry)
+        self.store.save(data)
+
+        self.water_oz.set("8")
+        self.water_time.set("")
+
+        self._refresh_water_list()
+        self._refresh_water_today_chip()
+
+    def _refresh_water_list(self) -> None:
+        if not hasattr(self, "water_list"):
+            return
+
+        self.water_list.delete(0, tk.END)
+        data = self.store.load()
+        water = list(reversed(data.get("water", [])))
+
+        for w in water:
+            dt = _dt_from_entry_ts(str(w.get("ts", "")))
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(w.get("ts", ""))
+            oz = w.get("oz", "")
+            self.water_list.insert(tk.END, f"{when} — {oz} oz")
+
+    def _water_delete_selected(self) -> None:
+        if not hasattr(self, "water_list"):
+            return
+        sel = self.water_list.curselection()
+        if not sel:
+            return
+        if not messagebox.askyesno("Confirm delete", "Delete selected water entry? This cannot be undone."):
+            return
+
+        idx = sel[0]
+        data = self.store.load()
+        water = data.get("water", [])
+        water_sorted = list(reversed(water))
+        if idx < 0 or idx >= len(water_sorted):
+            return
+        target = water_sorted[idx]
+
+        for i, w in enumerate(water):
+            if w == target:
+                water.pop(i)
+                break
+
+        data["water"] = water
+        self.store.save(data)
+        self._refresh_water_list()
+        self._refresh_water_today_chip()
+
+    def _water_total_today_oz(self) -> int:
+        data = self.store.load()
+        water = data.get("water", [])
+        today = _now_local().date()
+        total = 0
+
+        for w in water:
+            dt = _dt_from_entry_ts(str(w.get("ts", "")))
+            if not dt:
+                continue
+            if dt.astimezone().date() == today:
+                oz = w.get("oz")
+                if isinstance(oz, (int, float)):
+                    total += int(oz)
+                elif isinstance(oz, str) and oz.strip().isdigit():
+                    total += int(oz.strip())
+
+        return total
+
+    def _refresh_water_today_chip(self) -> None:
+        if not hasattr(self, "water_today_chip"):
+            return
+
+        total = self._water_total_today_oz()
+        goal = self._get_water_goal_for_day(self._today_key())
+
+        if goal > 0:
+            pct = int(round((total / goal) * 100)) if goal else 0
+            self.water_today_chip.set(f"Today: {total}/{goal} oz ({pct}%)")
+        else:
+            self.water_today_chip.set(f"Today: {total} oz")
+
+    # -------------------------
+    # Stats tab + analysis
+    # -------------------------
 
     def _build_stats_tab(self) -> None:
         top = ttk.Frame(self.tab_stats)
@@ -926,8 +1172,10 @@ class ChaosCatcherApp(tk.Tk):
 
         btns = ttk.Frame(self.tab_stats)
         btns.pack(fill="x", pady=10)
+
         ttk.Button(btns, text="Medication counts", command=self._safe_cmd(self._stats_med_counts)).pack(side="left", padx=6)
         ttk.Button(btns, text="Mood daily averages", command=self._safe_cmd(self._stats_mood_daily)).pack(side="left", padx=6)
+        ttk.Button(btns, text="Water totals", command=self._safe_cmd(self._stats_water_totals)).pack(side="left", padx=6)
 
         graph_box = ttk.LabelFrame(self.tab_stats, text="Mood Graph (avg per day)")
         graph_box.pack(fill="x", padx=4, pady=6)
@@ -970,18 +1218,61 @@ class ChaosCatcherApp(tk.Tk):
         ).pack(side="left", padx=6)
         ttk.Button(row, text="Analyze", command=self._safe_cmd(self._analyze_mood)).pack(side="left", padx=6)
 
-        self.analysis_out = tk.Text(analysis_box, height=6, wrap="word")
+        self.analysis_out = tk.Text(analysis_box, height=8, wrap="word")
         self.analysis_out.pack(fill="x", padx=6, pady=(0, 6))
         self._analysis_write("Mood Analysis\n----------------------------\nClick Analyze.")
 
         self.stats_out = tk.Text(self.tab_stats, wrap="word")
         self.stats_out.pack(fill="both", expand=True, pady=(8, 0))
 
-    # -------- Stats actions --------
+    def _stats_water_totals(self) -> None:
+        days = int(self.stats_days.get())
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
-    def _write_stats(self, text: str) -> None:
-        self.stats_out.delete("1.0", tk.END)
-        self.stats_out.insert(tk.END, text)
+        data = self.store.load()
+        water = data.get("water", [])
+
+        by_day: dict[str, int] = {}
+        total = 0
+
+        for w in water:
+            dt = _dt_from_entry_ts(str(w.get("ts", "")))
+            if not dt or dt < cutoff:
+                continue
+
+            oz = w.get("oz")
+            n = 0
+            if isinstance(oz, (int, float)):
+                n = int(oz)
+            elif isinstance(oz, str) and oz.strip().isdigit():
+                n = int(oz.strip())
+            if n <= 0:
+                continue
+
+            day = dt.date().isoformat()
+            by_day[day] = by_day.get(day, 0) + n
+            total += n
+
+        lines = [
+            f"Water totals (last {days} days)",
+            "-------------------------------",
+            f"Total: {total} oz",
+            "",
+        ]
+
+        if not by_day:
+            lines.append("No entries.")
+        else:
+            # include goal if available for that day
+            for d in sorted(by_day.keys()):
+                goal = self._get_water_goal_for_day(d)
+                if goal > 0:
+                    pct = int(round((by_day[d] / goal) * 100))
+                    lines.append(f"- {d}: {by_day[d]} / {goal} oz ({pct}%)")
+                else:
+                    lines.append(f"- {d}: {by_day[d]} oz")
+
+        self._write_stats("\n".join(lines))
 
     def _stats_med_counts(self) -> None:
         days = int(self.stats_days.get())
@@ -991,181 +1282,27 @@ class ChaosCatcherApp(tk.Tk):
         meds = data.get("medications", [])
 
         counts: dict[str, int] = {}
-        total = 0
         for m in meds:
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
             if not dt or dt < cutoff:
                 continue
-            name = str(m.get("name", "")).strip() or "(unnamed)"
-            counts[name] = counts.get(name, 0) + 1
-            total += 1
+            name = str(m.get("name", "")).strip()
+            if not name:
+                continue
+            key = name
+            counts[key] = counts.get(key, 0) + 1
 
         lines = [
             f"Medication counts (last {days} days)",
             "------------------------------------",
-            f"Total entries: {total}",
-            "",
         ]
         if not counts:
             lines.append("No entries.")
         else:
-            for name, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0].lower())):
-                lines.append(f"- {name}: {n}")
+            for k in sorted(counts.keys(), key=lambda x: (-counts[x], x.lower())):
+                lines.append(f"- {k}: {counts[k]}")
 
         self._write_stats("\n".join(lines))
-
-    def _stats_mood_daily(self) -> None:
-        days = int(self.stats_days.get())
-        day_labels, avgs = self._mood_daily_avgs(days)
-
-        lines = [
-            f"Mood daily averages (last {days} days)",
-            "--------------------------------------",
-        ]
-        if not day_labels:
-            lines.append("No entries.")
-            self._write_stats("\n".join(lines))
-            return
-
-        overall = sum(avgs) / len(avgs)
-        lines += ["", f"Days with entries: {len(avgs)}", f"Overall average: {overall:.2f}/10", ""]
-        for d, a in zip(day_labels, avgs):
-            lines.append(f"- {d}: {a:.2f}/10")
-
-        self._write_stats("\n".join(lines))
-
-    def _analysis_write(self, text: str) -> None:
-        self.analysis_out.delete("1.0", tk.END)
-        self.analysis_out.insert(tk.END, text)
-
-    def _range_to_days(self) -> int | None:
-        label = self.analysis_range.get()
-        if label == "Last 7 days":
-            return 7
-        if label == "Last 14 days":
-            return 14
-        if label == "Last 30 days":
-            return 30
-        if label == "Last 90 days":
-            return 90
-        if label == "All time":
-            return None
-        return 30
-
-    def _analyze_sleep_vs_mood(self, days: int = 30) -> str:
-        """Compute Pearson correlation between sleep total and mood score."""
-        data = self.store.load()
-        moods = data.get("moods", [])
-
-        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
-
-        mood_vals: list[float] = []
-        sleep_vals: list[float] = []
-
-        for m in moods:
-            dt = _dt_from_entry_ts(str(m.get("ts", "")))
-            if not dt or dt < cutoff:
-                continue
-
-            score = m.get("score")
-            sleep_total = m.get("sleep_total_min")
-
-            if isinstance(score, int) and sleep_total is not None:
-                mood_vals.append(float(score))
-                sleep_vals.append(float(sleep_total))
-
-        if len(mood_vals) < 3:
-            return "Not enough data yet to analyze sleep vs mood."
-
-        import math
-
-        mean_sleep = sum(sleep_vals) / len(sleep_vals)
-        mean_mood = sum(mood_vals) / len(mood_vals)
-
-        num = sum((s - mean_sleep) * (m - mean_mood) for s, m in zip(sleep_vals, mood_vals))
-        den_sleep = math.sqrt(sum((s - mean_sleep) ** 2 for s in sleep_vals))
-        den_mood = math.sqrt(sum((m - mean_mood) ** 2 for m in mood_vals))
-
-        if den_sleep == 0 or den_mood == 0:
-            return "Sleep or mood variance too small to analyze."
-
-        r = num / (den_sleep * den_mood)
-
-        if r > 0.4:
-            return f"Stronger sleep appears linked to better mood (r={r:.2f})."
-        elif r < -0.4:
-            return f"Unexpected pattern: more sleep linked to lower mood (r={r:.2f})."
-        else:
-            return f"Weak or no clear sleep-mood relationship detected (r={r:.2f})."
-
-    def _analyze_mood(self) -> None:
-        days = self._range_to_days()
-        data = self.store.load()
-        moods = data.get("moods", [])
-
-        sleep_insight = self._analyze_sleep_vs_mood(days if days is not None else 30)
-
-        cutoff = None
-        if days is not None:
-            cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
-
-        scores: list[int] = []
-        for m in moods:
-            dt = _dt_from_entry_ts(str(m.get("ts", "")))
-            if not dt:
-                continue
-            if cutoff and dt < cutoff:
-                continue
-            s = m.get("score")
-            if isinstance(s, int) and 1 <= s <= 10:
-                scores.append(s)
-
-        window_label = self.analysis_range.get()
-        if not scores:
-            self._analysis_write(
-                "Mood Analysis\n----------------------------\n"
-                f"Range: {window_label}\n\n"
-                "No entries."
-            )
-            return
-
-        avg = sum(scores) / len(scores)
-        mn = min(scores)
-        mx = max(scores)
-
-        # --- NEW: trend line for analysis ---
-        series = self._daily_mood_series(days=days if days is not None else 3650)
-        if len(series) >= 3:
-            vals = [v for _, v in series]
-            xs = [float(i) for i in range(len(vals))]
-            slope = _linear_regression_slope(xs, [float(v) for v in vals])
-            trend_label = _trend_label_from_slope(slope, stable_band=0.02)
-            trend_line = f"Trend: {trend_label} ({slope:+.2f}/day)\n"
-        else:
-            trend_line = "Trend: Not enough data for trend.\n"
-
-        base_text: str = (
-            "Mood Analysis\n----------------------------\n"
-            f"Range: {window_label}\n\n"
-            f"Entries: {len(scores)}\n"
-            f"Average rating: {avg:.2f}\n"
-            f"Min / Max: {mn} / {mx}\n"
-            f"{trend_line}\n"
-            f"Sleep vs mood: {sleep_insight}\n"
-        )
-
-        alerts_text = self._detect_mood_alerts(
-            lookback_days=90,
-            baseline_days=30,
-            exclude_recent_days=3,
-            dip_threshold=1.0,
-            crash_drop_day=2.0,
-            crash_drop_3day=1.5,
-            low_zone=4.0,
-            high_zone=7.0,
-        )
-
-        self._analysis_write(base_text + "\n" + alerts_text)
 
     def _mood_daily_avgs(self, days: int) -> tuple[list[str], list[float]]:
         cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
@@ -1185,15 +1322,28 @@ class ChaosCatcherApp(tk.Tk):
         avgs = [sum(by_day[d]) / len(by_day[d]) for d in days_sorted]
         return days_sorted, avgs
 
-    # -------------------------
-    # Mood pattern detection
-    # -------------------------
+    def _stats_mood_daily(self) -> None:
+        days = int(self.stats_days.get())
+        ds, avgs = self._mood_daily_avgs(days)
+
+        lines = [
+            f"Mood daily averages (last {days} days)",
+            "--------------------------------------",
+        ]
+        if not ds:
+            lines.append("No entries.")
+            self._write_stats("\n".join(lines))
+            return
+
+        overall = sum(avgs) / len(avgs)
+        lines.append(f"Overall avg (days with entries): {overall:.2f}/10")
+        lines.append("")
+        for d, a in zip(ds, avgs):
+            lines.append(f"- {d}: {a:.2f}/10")
+
+        self._write_stats("\n".join(lines))
 
     def _daily_mood_series(self, days: int | None = 90) -> list[tuple[datetime, float]]:
-        """
-        Returns list of (day_start_local_datetime, avg_mood_for_day) sorted by day ascending.
-        Only includes days that have entries.
-        """
         data = self.store.load()
         moods = data.get("moods", [])
 
@@ -1220,10 +1370,6 @@ class ChaosCatcherApp(tk.Tk):
         return out
 
     def _rolling_avg(self, values: list[float], window: int) -> list[float | None]:
-        """
-        Returns rolling averages aligned to the same indices as values.
-        Indices < window-1 => None.
-        """
         if window <= 0:
             raise ValueError("window must be > 0")
         out: list[float | None] = [None] * len(values)
@@ -1243,10 +1389,6 @@ class ChaosCatcherApp(tk.Tk):
         baseline_days: int = 30,
         exclude_recent_days: int = 3,
     ) -> float | None:
-        """
-        Baseline = average of daily averages over baseline_days, excluding most recent exclude_recent_days.
-        Returns None if insufficient data.
-        """
         if not series:
             return None
 
@@ -1275,11 +1417,6 @@ class ChaosCatcherApp(tk.Tk):
         low_zone: float = 4.0,
         high_zone: float = 7.0,
     ) -> str:
-        """
-        Detect:
-          - 3-day rolling avg dips below baseline by >= dip_threshold
-          - crash patterns: big day-to-day drop, big 3-day drop, low streak after high day
-        """
         series = self._daily_mood_series(days=lookback_days)
         if len(series) < 5:
             return "Not enough mood data yet for alerts (need a few days of entries)."
@@ -1288,12 +1425,10 @@ class ChaosCatcherApp(tk.Tk):
         vals = [v for _, v in series]
 
         baseline = self._compute_baseline(series, baseline_days=baseline_days, exclude_recent_days=exclude_recent_days)
-
         r3 = self._rolling_avg(vals, 3)
 
         alerts: list[str] = []
 
-        # --- 3-day dip vs baseline ---
         if baseline is not None:
             dip_events: list[tuple[datetime, float]] = []
             for i in range(len(vals)):
@@ -1305,7 +1440,7 @@ class ChaosCatcherApp(tk.Tk):
 
             if dip_events:
                 last_day, last_avg3 = dip_events[-1]
-                ongoing = (days[-1] == last_day)
+                ongoing = days[-1] == last_day
                 status = "ONGOING" if ongoing else "RECENT"
                 alerts.append(
                     f"⚠️  3-day dip vs baseline ({status})\n"
@@ -1322,7 +1457,6 @@ class ChaosCatcherApp(tk.Tk):
         else:
             alerts.append("Baseline unavailable (not enough prior days).")
 
-        # --- Crash patterns ---
         crash_hits: list[str] = []
 
         for i in range(1, len(vals)):
@@ -1368,7 +1502,118 @@ class ChaosCatcherApp(tk.Tk):
 
         return "Mood Alerts\n----------------------------\n" + "\n\n".join(alerts) + guidance
 
-    # -------- Mood Graph Drawing --------
+    def _analyze_sleep_vs_mood(self, days: int = 30) -> str:
+        data = self.store.load()
+        moods = data.get("moods", [])
+        cutoff = _now_local() - timedelta(days=days)
+
+        sleep_vals: list[float] = []
+        mood_vals: list[float] = []
+
+        for m in moods:
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            if not dt or dt < cutoff:
+                continue
+            score = m.get("score")
+            sleep_total = m.get("sleep_total_min")
+            if isinstance(score, int) and sleep_total is not None:
+                try:
+                    mood_vals.append(float(score))
+                    sleep_vals.append(float(sleep_total))
+                except Exception:
+                    continue
+
+        if len(mood_vals) < 3:
+            return "Not enough data yet to analyze sleep vs mood."
+
+        r = _pearson_corr(sleep_vals, mood_vals)
+        if r is None:
+            return "Sleep vs mood correlation unavailable (data lacks variation)."
+
+        direction = "positive" if r > 0 else "negative"
+        strength = "weak"
+        if abs(r) >= 0.6:
+            strength = "strong"
+        elif abs(r) >= 0.35:
+            strength = "moderate"
+
+        return f"Sleep vs mood correlation (last {days} days): r={r:+.2f} ({strength} {direction})."
+
+    def _analyze_mood(self) -> None:
+        window_label = self.analysis_range.get().strip()
+        days: int | None
+        if window_label == "All time":
+            days = None
+        else:
+            try:
+                days = int(window_label.split()[1])
+            except Exception:
+                days = 30
+
+        data = self.store.load()
+        moods = data.get("moods", [])
+
+        cutoff = None
+        if days is not None:
+            cutoff = _now_local() - timedelta(days=days)
+
+        scores: list[int] = []
+        for m in moods:
+            dt = _dt_from_entry_ts(str(m.get("ts", "")))
+            if not dt:
+                continue
+            if cutoff is not None and dt < cutoff:
+                continue
+            s = m.get("score")
+            if isinstance(s, int) and 1 <= s <= 10:
+                scores.append(s)
+
+        if not scores:
+            self._analysis_write("Mood Analysis\n----------------------------\nNo mood entries in this range.")
+            return
+
+        avg = sum(scores) / len(scores)
+        mn = min(scores)
+        mx = max(scores)
+
+        series = self._daily_mood_series(days=days if days is not None else 3650)
+        if len(series) >= 3:
+            vals = [v for _, v in series]
+            xs = [float(i) for i in range(len(vals))]
+            slope = _linear_regression_slope(xs, [float(v) for v in vals])
+            trend_label = _trend_label_from_slope(slope, stable_band=0.02)
+            trend_line = f"Trend: {trend_label} ({slope:+.2f}/day)\n"
+        else:
+            trend_line = "Trend: Not enough data for trend.\n"
+
+        sleep_insight = self._analyze_sleep_vs_mood(days=30)
+
+        alerts_text = self._detect_mood_alerts(
+            lookback_days=90,
+            baseline_days=30,
+            exclude_recent_days=3,
+            dip_threshold=1.0,
+            crash_drop_day=2.0,
+            crash_drop_3day=1.5,
+            low_zone=4.0,
+            high_zone=7.0,
+        )
+
+        base_text = (
+            "Mood Analysis\n----------------------------\n"
+            f"Range: {window_label}\n\n"
+            f"Entries: {len(scores)}\n"
+            f"Average rating: {avg:.2f}\n"
+            f"Min / Max: {mn} / {mx}\n"
+            f"{trend_line}\n"
+            f"{sleep_insight}\n"
+        )
+
+        self._analysis_write(base_text + "\n" + alerts_text)
+
+    # -------------------------
+    # Mood Graph Drawing
+    # -------------------------
 
     def _schedule_graph_redraw(self, _evt=None) -> None:
         if self._graph_redraw_job is not None:
@@ -1378,14 +1623,11 @@ class ChaosCatcherApp(tk.Tk):
                 pass
         self._graph_redraw_job = self.after(120, self._draw_mood_graph)
 
-    # -------- Graph tooltip helpers --------
-
     def _graph_show_tooltip(self, _event, text: str) -> None:
-        # Kill any existing tooltip first
         self._graph_hide_tooltip()
 
         tip = tk.Toplevel(self)
-        tip.wm_overrideredirect(True)  # no title bar/borders
+        tip.wm_overrideredirect(True)
         try:
             tip.attributes("-topmost", True)
         except Exception:
@@ -1404,7 +1646,6 @@ class ChaosCatcherApp(tk.Tk):
         )
         label.pack()
 
-        # Position near mouse, keep within screen bounds
         x = self.winfo_pointerx() + 12
         y = self.winfo_pointery() - 10
 
@@ -1523,7 +1764,6 @@ class ChaosCatcherApp(tk.Tk):
                 return MOOD_LINE_YELLOW
             return MOOD_LINE_GREEN
 
-        # Optional: draw connecting line for readability
         if len(values) >= 2:
             pts: list[float] = []
             for i, v in enumerate(values):
@@ -1560,6 +1800,49 @@ class ChaosCatcherApp(tk.Tk):
         if len(values) >= 2:
             trend_txt = f"Trend: {trend_label} ({slope:+.2f}/day)"
             canvas.create_text(w - pad_r, pad_t, text=trend_txt, anchor="ne", fill="#666")
+
+    # -------------------------
+    # Export tab
+    # -------------------------
+
+    def _build_export_tab(self) -> None:
+        box = ttk.Frame(self.tab_export)
+        box.pack(fill="both", expand=True)
+
+        ttk.Label(box, text="Export", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
+        ttk.Label(
+            box,
+            text="Exports your data file as-is (JSON). Useful for backups or sharing with Future You.",
+            foreground="#555",
+            wraplength=760,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        ttk.Button(box, text="Save JSON As…", command=self._safe_cmd(self._export_json_as)).pack(anchor="w")
+
+        self.export_status = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.export_status, foreground="#555").pack(anchor="w", pady=(8, 0))
+
+    def _export_json_as(self) -> None:
+        data = self.store.load()
+        default_name = f"chaoscatcher-export-{_now_local().date().isoformat()}.json"
+
+        path = filedialog.asksaveasfilename(
+            title="Save ChaosCatcher JSON",
+            defaultextension=".json",
+            initialfile=default_name,
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+
+        try:
+            save_json(Path(path), data)
+        except Exception as e:
+            messagebox.showerror("Export failed", f"Could not export JSON:\n{e}")
+            return
+
+        self.export_status.set(f"Saved: {path}")
 
 
 # -------------------------
