@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 import sys
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
 from datetime import datetime, timedelta
 from pathlib import Path
+from tkinter import filedialog, messagebox, simpledialog, ttk
 from typing import Any
 
 from .paths import resolve_data_path
@@ -322,34 +322,24 @@ class ChaosCatcherApp(tk.Tk):
         right = ttk.Frame(frm)
         right.pack(side="right")
 
-        ttk.Label(left, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(
-            side="left"
-        )
+        ttk.Label(left, text="ChaosCatcher", font=("TkDefaultFont", 16, "bold")).pack(side="left")
 
         self.path_var = tk.StringVar(value=str(self.store.data_path))
-        ttk.Label(left, textvariable=self.path_var, foreground="#666").pack(
-            side="left", padx=12
-        )
+        ttk.Label(left, textvariable=self.path_var, foreground="#666").pack(side="left", padx=12)
 
         btns = ttk.Frame(right)
         btns.pack(side="left")
 
-        ttk.Button(
-            btns, text="Refresh", command=self._safe_cmd(self._refresh_all_lists)
-        ).pack(side="left", padx=4)
+        ttk.Button(btns, text="Refresh", command=self._safe_cmd(self._refresh_all_lists)).pack(side="left", padx=4)
         ttk.Button(
             btns,
             text="Open Data Folder",
             command=self._safe_cmd(self._open_data_folder),
         ).pack(side="left", padx=4)
-        ttk.Button(
-            btns, text="Log Vyvanse", command=self._safe_cmd(self._vyvanse_quick_log)
-        ).pack(side="left", padx=4)
+        ttk.Button(btns, text="Log Vyvanse", command=self._safe_cmd(self._vyvanse_quick_log)).pack(side="left", padx=4)
 
         # Vyvanse arc chip (click for details)
-        self.vy_arc_label = ttk.Label(
-            right, text="Vyvanse: —", foreground="#444", cursor="hand2"
-        )
+        self.vy_arc_label = ttk.Label(right, text="Vyvanse: —", foreground="#444", cursor="hand2")
         self.vy_arc_label.pack(side="left", padx=(12, 0))
         self.vy_arc_label.bind("<Button-1>", lambda _e: self._show_vyvanse_popup())
 
@@ -437,9 +427,7 @@ class ChaosCatcherApp(tk.Tk):
         left.pack(side="left", fill="y", padx=(0, 10))
         right.pack(side="right", fill="both", expand=True)
 
-        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(
-            anchor="w", pady=(0, 8)
-        )
+        ttk.Label(left, text="Add medication", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
 
         self.med_name = tk.StringVar()
         self.med_dose = tk.StringVar()
@@ -451,12 +439,10 @@ class ChaosCatcherApp(tk.Tk):
         self._labeled_entry(left, "Time (e.g. today 7:34am)", self.med_time)
         self._labeled_entry(left, "Notes (optional)", self.med_notes)
 
-        ttk.Button(
-            left, text="Add Medication", command=self._safe_cmd(self._med_add)
-        ).pack(fill="x", pady=(8, 0))
-        ttk.Button(
-            left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)
-        ).pack(fill="x", pady=(6, 0))
+        ttk.Button(left, text="Add Medication", command=self._safe_cmd(self._med_add)).pack(fill="x", pady=(8, 0))
+        ttk.Button(left, text="Took all daily meds", command=self._safe_cmd(self._med_take_all)).pack(
+            fill="x", pady=(6, 0)
+        )
 
         ttk.Separator(right).pack(fill="x", pady=(0, 8))
         ttk.Label(
@@ -545,17 +531,13 @@ class ChaosCatcherApp(tk.Tk):
         self.store.save(data)
         self._refresh_med_list()
         self._refresh_vyvanse_chip()
-        messagebox.showinfo(
-            "Logged", f"Added {added} meds at {_fmt_time(_now_local())}."
-        )
+        messagebox.showinfo("Logged", f"Added {added} meds at {_fmt_time(_now_local())}.")
 
     def _med_delete_selected(self) -> None:
         sel = self.med_list.curselection()
         if not sel:
             return
-        if not messagebox.askyesno(
-            "Confirm delete", "Delete selected medication entry? This cannot be undone."
-        ):
+        if not messagebox.askyesno("Confirm delete", "Delete selected medication entry? This cannot be undone."):
             return
 
         idx = sel[0]
@@ -583,11 +565,7 @@ class ChaosCatcherApp(tk.Tk):
 
         for m in meds:
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
-            when = (
-                f"{dt.date().isoformat()} {_fmt_time(dt)}"
-                if dt
-                else str(m.get("ts", ""))
-            )
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(m.get("ts", ""))
             notes = m.get("notes", "")
             line = f"{when} — {m.get('name', '')} {m.get('dose', '')}"
             if notes:
@@ -656,9 +634,7 @@ class ChaosCatcherApp(tk.Tk):
         chip = f"Vyvanse: {phase} (T+{t_pretty})"
         return chip, phase, t_min
 
-    def _vyvanse_details_text(
-        self, entry, dose_dt: datetime, phase: str, t_min: float
-    ) -> str:
+    def _vyvanse_details_text(self, entry, dose_dt: datetime, phase: str, t_min: float) -> str:
         try:
             taken_str = dose_dt.strftime("%I:%M %p").lstrip("0")
         except Exception:
@@ -753,9 +729,7 @@ class ChaosCatcherApp(tk.Tk):
         if t is None:
             return
 
-        notes = simpledialog.askstring(
-            "Log Vyvanse", "Notes (optional):", initialvalue="", parent=self
-        )
+        notes = simpledialog.askstring("Log Vyvanse", "Notes (optional):", initialvalue="", parent=self)
         if notes is None:
             notes = ""
 
@@ -786,9 +760,7 @@ class ChaosCatcherApp(tk.Tk):
         left.pack(side="left", fill="y", padx=(0, 10))
         right.pack(side="right", fill="both", expand=True)
 
-        ttk.Label(left, text="Add mood", font=("TkDefaultFont", 12, "bold")).pack(
-            anchor="w", pady=(0, 8)
-        )
+        ttk.Label(left, text="Add mood", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
 
         self.mood_score = tk.IntVar(value=6)
         self.mood_time = tk.StringVar(value="today 9am")
@@ -800,9 +772,7 @@ class ChaosCatcherApp(tk.Tk):
         self.sleep_deep = tk.StringVar()
 
         ttk.Label(left, text="Score (1–10)").pack(anchor="w")
-        ttk.Spinbox(left, from_=1, to=10, textvariable=self.mood_score, width=6).pack(
-            anchor="w", pady=(0, 8)
-        )
+        ttk.Spinbox(left, from_=1, to=10, textvariable=self.mood_score, width=6).pack(anchor="w", pady=(0, 8))
 
         self._labeled_entry(left, "Time (e.g. today 9am)", self.mood_time)
         self._labeled_entry(left, "Tags (comma/space)", self.mood_tags)
@@ -814,14 +784,10 @@ class ChaosCatcherApp(tk.Tk):
         self._labeled_entry(left, "REM (e.g. 1:22 or 82)", self.sleep_rem)
         self._labeled_entry(left, "Deep (e.g. 0:13 or 13)", self.sleep_deep)
 
-        ttk.Button(left, text="Add Mood", command=self._safe_cmd(self._mood_add)).pack(
-            fill="x", pady=(8, 0)
-        )
+        ttk.Button(left, text="Add Mood", command=self._safe_cmd(self._mood_add)).pack(fill="x", pady=(8, 0))
 
         ttk.Separator(right).pack(fill="x", pady=(0, 8))
-        ttk.Label(
-            right, text="Mood log (newest first)", font=("TkDefaultFont", 12, "bold")
-        ).pack(anchor="w")
+        ttk.Label(right, text="Mood log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
 
         self.mood_list = tk.Listbox(right, height=20)
         self.mood_list.pack(fill="both", expand=True, pady=8)
@@ -906,9 +872,7 @@ class ChaosCatcherApp(tk.Tk):
         sel = self.mood_list.curselection()
         if not sel:
             return
-        if not messagebox.askyesno(
-            "Confirm delete", "Delete selected mood entry? This cannot be undone."
-        ):
+        if not messagebox.askyesno("Confirm delete", "Delete selected mood entry? This cannot be undone."):
             return
 
         idx = sel[0]
@@ -936,11 +900,7 @@ class ChaosCatcherApp(tk.Tk):
 
         for m in moods:
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
-            when = (
-                f"{dt.date().isoformat()} {_fmt_time(dt)}"
-                if dt
-                else str(m.get("ts", ""))
-            )
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(m.get("ts", ""))
             tags = m.get("tags", [])
             notes = m.get("notes", "")
             st = m.get("sleep_total_min")
@@ -1018,9 +978,7 @@ class ChaosCatcherApp(tk.Tk):
         left.pack(side="left", fill="y", padx=(0, 10))
         right.pack(side="right", fill="both", expand=True)
 
-        ttk.Label(left, text="Water", font=("TkDefaultFont", 12, "bold")).pack(
-            anchor="w", pady=(0, 8)
-        )
+        ttk.Label(left, text="Water", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
 
         # Quick add buttons
         btnrow = ttk.Frame(left)
@@ -1047,9 +1005,7 @@ class ChaosCatcherApp(tk.Tk):
         # Daily goal controls (for today)
         ttk.Label(left, text="Daily water goal (oz)").pack(anchor="w")
 
-        self.water_goal_oz = tk.StringVar(
-            value=str(self._get_water_goal_for_day(self._today_key()))
-        )
+        self.water_goal_oz = tk.StringVar(value=str(self._get_water_goal_for_day(self._today_key())))
         goalrow = ttk.Frame(left)
         goalrow.pack(anchor="w", pady=(0, 8), fill="x")
 
@@ -1072,13 +1028,9 @@ class ChaosCatcherApp(tk.Tk):
         self.water_time = tk.StringVar(value="")  # blank = now
 
         self._labeled_entry(left, "Amount (oz)", self.water_oz)
-        self._labeled_entry(
-            left, "Time (blank = now; e.g. today 2:10pm)", self.water_time
-        )
+        self._labeled_entry(left, "Time (blank = now; e.g. today 2:10pm)", self.water_time)
 
-        ttk.Button(
-            left, text="Add Water", command=self._safe_cmd(self._water_add)
-        ).pack(fill="x", pady=(8, 0))
+        ttk.Button(left, text="Add Water", command=self._safe_cmd(self._water_add)).pack(fill="x", pady=(8, 0))
 
         # Right side: list + today chip
         ttk.Separator(right).pack(fill="x", pady=(0, 8))
@@ -1086,14 +1038,10 @@ class ChaosCatcherApp(tk.Tk):
         top = ttk.Frame(right)
         top.pack(fill="x")
 
-        ttk.Label(
-            top, text="Water log (newest first)", font=("TkDefaultFont", 12, "bold")
-        ).pack(side="left")
+        ttk.Label(top, text="Water log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(side="left")
 
         self.water_today_chip = tk.StringVar(value="Today: 0 oz")
-        ttk.Label(top, textvariable=self.water_today_chip, foreground="#444").pack(
-            side="right"
-        )
+        ttk.Label(top, textvariable=self.water_today_chip, foreground="#444").pack(side="right")
 
         self.water_list = tk.Listbox(right, height=20)
         self.water_list.pack(fill="both", expand=True, pady=8)
@@ -1112,9 +1060,7 @@ class ChaosCatcherApp(tk.Tk):
             messagebox.showerror("Bad goal", "Goal must be a number (oz). Example: 80.")
             return
         if goal < 0 or goal > 512:
-            messagebox.showerror(
-                "Bad goal", "Please enter a reasonable goal (0–512 oz)."
-            )
+            messagebox.showerror("Bad goal", "Please enter a reasonable goal (0–512 oz).")
             return
 
         self._set_water_goal_for_day(self._today_key(), goal)
@@ -1128,9 +1074,7 @@ class ChaosCatcherApp(tk.Tk):
             messagebox.showerror("Bad goal", "Goal must be a number (oz). Example: 80.")
             return
         if goal < 0 or goal > 512:
-            messagebox.showerror(
-                "Bad goal", "Please enter a reasonable goal (0–512 oz)."
-            )
+            messagebox.showerror("Bad goal", "Please enter a reasonable goal (0–512 oz).")
             return
 
         self._set_default_water_goal(goal)
@@ -1156,15 +1100,11 @@ class ChaosCatcherApp(tk.Tk):
         try:
             oz = int(float(raw_oz))  # allows "8.0"
         except Exception:
-            messagebox.showerror(
-                "Bad amount", "Water amount must be a number (oz). Example: 8 or 12."
-            )
+            messagebox.showerror("Bad amount", "Water amount must be a number (oz). Example: 8 or 12.")
             return
 
         if oz <= 0 or oz > 256:
-            messagebox.showerror(
-                "Bad amount", "Please enter a reasonable oz amount (1–256)."
-            )
+            messagebox.showerror("Bad amount", "Please enter a reasonable oz amount (1–256).")
             return
 
         try:
@@ -1195,11 +1135,7 @@ class ChaosCatcherApp(tk.Tk):
 
         for w in water:
             dt = _dt_from_entry_ts(str(w.get("ts", "")))
-            when = (
-                f"{dt.date().isoformat()} {_fmt_time(dt)}"
-                if dt
-                else str(w.get("ts", ""))
-            )
+            when = f"{dt.date().isoformat()} {_fmt_time(dt)}" if dt else str(w.get("ts", ""))
             oz = w.get("oz", "")
             self.water_list.insert(tk.END, f"{when} — {oz} oz")
 
@@ -1209,9 +1145,7 @@ class ChaosCatcherApp(tk.Tk):
         sel = self.water_list.curselection()
         if not sel:
             return
-        if not messagebox.askyesno(
-            "Confirm delete", "Delete selected water entry? This cannot be undone."
-        ):
+        if not messagebox.askyesno("Confirm delete", "Delete selected water entry? This cannot be undone."):
             return
 
         idx = sel[0]
@@ -1252,9 +1186,7 @@ class ChaosCatcherApp(tk.Tk):
         return total
 
     def _water_daily_totals(self, days: int) -> dict[str, int]:
-        cutoff = _now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=days - 1)
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
         data = self.store.load()
         water = data.get("water", [])
@@ -1302,14 +1234,10 @@ class ChaosCatcherApp(tk.Tk):
         top = ttk.Frame(self.tab_stats)
         top.pack(fill="x")
 
-        ttk.Label(top, text="Stats", font=("TkDefaultFont", 12, "bold")).pack(
-            side="left"
-        )
+        ttk.Label(top, text="Stats", font=("TkDefaultFont", 12, "bold")).pack(side="left")
         self.stats_days = tk.IntVar(value=14)
         ttk.Label(top, text="Lookback days:").pack(side="left", padx=(20, 6))
-        ttk.Spinbox(top, from_=1, to=365, textvariable=self.stats_days, width=6).pack(
-            side="left"
-        )
+        ttk.Spinbox(top, from_=1, to=365, textvariable=self.stats_days, width=6).pack(side="left")
 
         btns = ttk.Frame(self.tab_stats)
         btns.pack(fill="x", pady=10)
@@ -1324,9 +1252,9 @@ class ChaosCatcherApp(tk.Tk):
             text="Mood daily averages",
             command=self._safe_cmd(self._stats_mood_daily),
         ).pack(side="left", padx=6)
-        ttk.Button(
-            btns, text="Water totals", command=self._safe_cmd(self._stats_water_totals)
-        ).pack(side="left", padx=6)
+        ttk.Button(btns, text="Water totals", command=self._safe_cmd(self._stats_water_totals)).pack(
+            side="left", padx=6
+        )
 
         graph_box = ttk.LabelFrame(self.tab_stats, text="Mood Graph (avg per day)")
         graph_box.pack(fill="x", padx=4, pady=6)
@@ -1336,9 +1264,7 @@ class ChaosCatcherApp(tk.Tk):
 
         ttk.Label(controls, text="Days:").pack(side="left")
         self.graph_days = tk.IntVar(value=14)
-        ttk.Spinbox(
-            controls, from_=1, to=365, textvariable=self.graph_days, width=6
-        ).pack(side="left", padx=6)
+        ttk.Spinbox(controls, from_=1, to=365, textvariable=self.graph_days, width=6).pack(side="left", padx=6)
 
         ttk.Button(
             controls,
@@ -1379,24 +1305,18 @@ class ChaosCatcherApp(tk.Tk):
             width=16,
             state="readonly",
         ).pack(side="left", padx=6)
-        ttk.Button(
-            row, text="Analyze", command=self._safe_cmd(self._analyze_mood)
-        ).pack(side="left", padx=6)
+        ttk.Button(row, text="Analyze", command=self._safe_cmd(self._analyze_mood)).pack(side="left", padx=6)
 
         self.analysis_out = tk.Text(analysis_box, height=8, wrap="word")
         self.analysis_out.pack(fill="x", padx=6, pady=(0, 6))
-        self._analysis_write(
-            "Mood Analysis\n----------------------------\nClick Analyze."
-        )
+        self._analysis_write("Mood Analysis\n----------------------------\nClick Analyze.")
 
         self.stats_out = tk.Text(self.tab_stats, wrap="word")
         self.stats_out.pack(fill="both", expand=True, pady=(8, 0))
 
     def _stats_water_totals(self) -> None:
         days = int(self.stats_days.get())
-        cutoff = _now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=days - 1)
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
         data = self.store.load()
         water = data.get("water", [])
@@ -1445,9 +1365,7 @@ class ChaosCatcherApp(tk.Tk):
 
     def _stats_med_counts(self) -> None:
         days = int(self.stats_days.get())
-        cutoff = _now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=days - 1)
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
         data = self.store.load()
         meds = data.get("medications", [])
@@ -1476,9 +1394,7 @@ class ChaosCatcherApp(tk.Tk):
         self._write_stats("\n".join(lines))
 
     def _mood_daily_avgs(self, days: int) -> tuple[list[str], list[float]]:
-        cutoff = _now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=days - 1)
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
         data = self.store.load()
         moods = data.get("moods", [])
 
@@ -1548,9 +1464,7 @@ class ChaosCatcherApp(tk.Tk):
 
         cutoff = None
         if days is not None:
-            cutoff = _now_local().replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ) - timedelta(days=days - 1)
+            cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
         by_day: dict[datetime, list[int]] = {}
         for m in moods:
@@ -1601,11 +1515,7 @@ class ChaosCatcherApp(tk.Tk):
         if not baseline_pool:
             return None
 
-        pool = (
-            baseline_pool[-baseline_days:]
-            if baseline_days and len(baseline_pool) > baseline_days
-            else baseline_pool
-        )
+        pool = baseline_pool[-baseline_days:] if baseline_days and len(baseline_pool) > baseline_days else baseline_pool
         vals = [v for _, v in pool]
         if not vals:
             return None
@@ -1629,9 +1539,7 @@ class ChaosCatcherApp(tk.Tk):
         days = [d for d, _ in series]
         vals = [v for _, v in series]
 
-        baseline = self._compute_baseline(
-            series, baseline_days=baseline_days, exclude_recent_days=exclude_recent_days
-        )
+        baseline = self._compute_baseline(series, baseline_days=baseline_days, exclude_recent_days=exclude_recent_days)
         r3 = self._rolling_avg(vals, 3)
 
         alerts: list[str] = []
@@ -1687,24 +1595,17 @@ class ChaosCatcherApp(tk.Tk):
                 )
 
         for i in range(len(vals) - 2):
-            if (
-                vals[i] >= high_zone
-                and vals[i + 1] <= low_zone
-                and vals[i + 2] <= low_zone
-            ):
+            if vals[i] >= high_zone and vals[i + 1] <= low_zone and vals[i + 2] <= low_zone:
                 crash_hits.append(
                     f"- Low streak after high day: {days[i].date().isoformat()} ({vals[i]:.1f}) then "
-                    f"{days[i + 1].date().isoformat()} ({vals[i + 1]:.1f}), {days[i + 2].date().isoformat()} ({vals[i + 2]:.1f})"
+                    f"{days[i + 1].date().isoformat()} ({vals[i + 1]:.1f}), "
+                    f"{days[i + 2].date().isoformat()} ({vals[i + 2]:.1f})"
                 )
 
         if crash_hits:
-            crash_block = "💥 Emotional crash patterns detected\n" + "\n".join(
-                crash_hits[-6:]
-            )
+            crash_block = "💥 Emotional crash patterns detected\n" + "\n".join(crash_hits[-6:])
         else:
-            crash_block = (
-                "✅ No clear emotional crash patterns detected (by current thresholds)."
-            )
+            crash_block = "✅ No clear emotional crash patterns detected (by current thresholds)."
 
         alerts.append(crash_block)
 
@@ -1715,11 +1616,7 @@ class ChaosCatcherApp(tk.Tk):
             "- Keep logging; the detector gets smarter as the dataset grows."
         )
 
-        return (
-            "Mood Alerts\n----------------------------\n"
-            + "\n\n".join(alerts)
-            + guidance
-        )
+        return "Mood Alerts\n----------------------------\n" + "\n\n".join(alerts) + guidance
 
     def _analyze_sleep_vs_mood(self, days: int = 30) -> str:
         data = self.store.load()
@@ -1788,9 +1685,7 @@ class ChaosCatcherApp(tk.Tk):
                 scores.append(s)
 
         if not scores:
-            self._analysis_write(
-                "Mood Analysis\n----------------------------\nNo mood entries in this range."
-            )
+            self._analysis_write("Mood Analysis\n----------------------------\nNo mood entries in this range.")
             return
 
         avg = sum(scores) / len(scores)
@@ -1912,9 +1807,7 @@ class ChaosCatcherApp(tk.Tk):
         data = self.store.load()
         moods = data.get("moods", [])
 
-        cutoff = _now_local().replace(
-            hour=0, minute=0, second=0, microsecond=0
-        ) - timedelta(days=days - 1)
+        cutoff = _now_local().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
 
         by_day: dict[str, list[int]] = {}
         for m in moods:
@@ -1946,9 +1839,7 @@ class ChaosCatcherApp(tk.Tk):
 
         values = [avg for _, avg, _, _, _ in daily_avgs]
         xs = list(range(len(values)))
-        slope = _linear_regression_slope(
-            [float(x) for x in xs], [float(y) for y in values]
-        )
+        slope = _linear_regression_slope([float(x) for x in xs], [float(y) for y in values])
         trend_label = _trend_label_from_slope(slope, stable_band=0.02)
 
         vmin, vmax = 1.0, 10.0
@@ -1971,15 +1862,9 @@ class ChaosCatcherApp(tk.Tk):
         y_top = y_for(vmax)
         y_bottom = y_for(vmin)
 
-        canvas.create_rectangle(
-            pad_l, y_red_top, w - pad_r, y_bottom, outline="", fill=MOOD_ZONE_RED
-        )
-        canvas.create_rectangle(
-            pad_l, y_yellow_top, w - pad_r, y_red_top, outline="", fill=MOOD_ZONE_YELLOW
-        )
-        canvas.create_rectangle(
-            pad_l, y_top, w - pad_r, y_yellow_top, outline="", fill=MOOD_ZONE_GREEN
-        )
+        canvas.create_rectangle(pad_l, y_red_top, w - pad_r, y_bottom, outline="", fill=MOOD_ZONE_RED)
+        canvas.create_rectangle(pad_l, y_yellow_top, w - pad_r, y_red_top, outline="", fill=MOOD_ZONE_YELLOW)
+        canvas.create_rectangle(pad_l, y_top, w - pad_r, y_yellow_top, outline="", fill=MOOD_ZONE_GREEN)
 
         canvas.create_line(pad_l, y_red_top, w - pad_r, y_red_top, fill="#dddddd")
         canvas.create_line(pad_l, y_yellow_top, w - pad_r, y_yellow_top, fill="#dddddd")
@@ -2016,16 +1901,9 @@ class ChaosCatcherApp(tk.Tk):
                 fill=zone_color(v),
             )
 
-            tooltip_text = (
-                f"{day}\n"
-                f"Avg: {v:.2f}/10\n"
-                f"Entries: {count}\n"
-                f"Min/Max: {vmin_day}/{vmax_day}"
-            )
+            tooltip_text = f"{day}\nAvg: {v:.2f}/10\nEntries: {count}\nMin/Max: {vmin_day}/{vmax_day}"
 
-            canvas.tag_bind(
-                dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t)
-            )
+            canvas.tag_bind(dot, "<Enter>", lambda e, t=tooltip_text: self._graph_show_tooltip(e, t))
             canvas.tag_bind(dot, "<Leave>", self._graph_hide_tooltip)
 
         first_day = daily_avgs[0][0]
@@ -2035,9 +1913,7 @@ class ChaosCatcherApp(tk.Tk):
 
         if len(values) >= 2:
             trend_txt = f"Trend: {trend_label} ({slope:+.2f}/day)"
-            canvas.create_text(
-                w - pad_r, pad_t, text=trend_txt, anchor="ne", fill="#666"
-            )
+            canvas.create_text(w - pad_r, pad_t, text=trend_txt, anchor="ne", fill="#666")
 
     # -------------------------
     # Export tab
@@ -2047,9 +1923,7 @@ class ChaosCatcherApp(tk.Tk):
         box = ttk.Frame(self.tab_export)
         box.pack(fill="both", expand=True)
 
-        ttk.Label(box, text="Export", font=("TkDefaultFont", 12, "bold")).pack(
-            anchor="w", pady=(0, 8)
-        )
+        ttk.Label(box, text="Export", font=("TkDefaultFont", 12, "bold")).pack(anchor="w", pady=(0, 8))
         ttk.Label(
             box,
             text="Exports your data file as-is (JSON). Useful for backups or sharing with Future You.",
@@ -2058,14 +1932,10 @@ class ChaosCatcherApp(tk.Tk):
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
-        ttk.Button(
-            box, text="Save JSON As…", command=self._safe_cmd(self._export_json_as)
-        ).pack(anchor="w")
+        ttk.Button(box, text="Save JSON As…", command=self._safe_cmd(self._export_json_as)).pack(anchor="w")
 
         self.export_status = tk.StringVar(value="")
-        ttk.Label(box, textvariable=self.export_status, foreground="#555").pack(
-            anchor="w", pady=(8, 0)
-        )
+        ttk.Label(box, textvariable=self.export_status, foreground="#555").pack(anchor="w", pady=(8, 0))
 
     def _export_json_as(self) -> None:
         data = self.store.load()
