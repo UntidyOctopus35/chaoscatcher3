@@ -2102,8 +2102,10 @@ class ChaosCatcherApp(tk.Tk):
             if self._focus_session_count >= sessions_before:
                 self._focus_phase = "long_break"
                 self._focus_session_count = 0
+                self._focus_notify("Work session done!", "Starting long break — take a real rest.")
             else:
                 self._focus_phase = "short_break"
+                self._focus_notify("Work session done!", "Starting short break.")
 
             # Auto-start the break
             self._focus_seconds_left = self._focus_seconds_for_phase()
@@ -2119,8 +2121,26 @@ class ChaosCatcherApp(tk.Tk):
             self._focus_update_display()
             self._focus_update_session_display()
             self._focus_btn_var.set("▶ Start")
+            self._focus_notify("Break over!", "Press Start when you're ready to focus.")
 
         self._refresh_focus_list()
+
+    def _focus_notify(self, title: str, body: str) -> None:
+        popup = tk.Toplevel(self)
+        popup.title(title)
+        popup.resizable(False, False)
+        popup.attributes("-topmost", True)
+
+        ttk.Label(popup, text=title, font=("TkDefaultFont", 13, "bold"), padding=(20, 16, 20, 4)).pack()
+        ttk.Label(popup, text=body, padding=(20, 0, 20, 12)).pack()
+        ttk.Button(popup, text="OK", command=popup.destroy, width=10).pack(pady=(0, 16))
+
+        popup.update_idletasks()
+        w, h = popup.winfo_width(), popup.winfo_height()
+        sw, sh = popup.winfo_screenwidth(), popup.winfo_screenheight()
+        popup.geometry(f"+{(sw - w) // 2}+{(sh - h) // 2}")
+        popup.grab_set()
+        popup.focus_force()
 
     def _focus_skip(self) -> None:
         if self._focus_job:
