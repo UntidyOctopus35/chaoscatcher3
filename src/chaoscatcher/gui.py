@@ -1,10 +1,16 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
+import math
 import os
+import struct
+import subprocess
 import sys
+import tempfile
 import tkinter as tk
+import wave
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -2129,7 +2135,39 @@ class ChaosCatcherApp(tk.Tk):
 
         self._refresh_focus_list()
 
+    def _focus_play_sound(self) -> None:
+        """Generate a 880 Hz bell-tone WAV with exponential decay and play via paplay."""
+        sample_rate = 44100
+        duration = 0.6
+        n = int(sample_rate * duration)
+        samples = []
+        for i in range(n):
+            t = i / sample_rate
+            env = math.exp(-6 * t / duration)
+            val = int(32767 * 0.55 * env * math.sin(2 * math.pi * 880 * t))
+            samples.append(max(-32768, min(32767, val)))
+        frames = struct.pack(f"<{n}h", *samples)
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate)
+            wf.writeframes(frames)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                f.write(buf.getvalue())
+                path = f.name
+            subprocess.Popen(
+                ["paplay", path],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self.after(2000, lambda: Path(path).unlink(missing_ok=True))
+        except Exception:
+            pass
+
     def _focus_notify(self, title: str, body: str) -> None:
+        self._focus_play_sound()
         popup = tk.Toplevel(self)
         popup.title(title)
         popup.resizable(False, False)
