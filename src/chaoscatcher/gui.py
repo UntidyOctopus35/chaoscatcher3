@@ -1950,7 +1950,12 @@ class ChaosCatcherApp(tk.Tk):
 
         ttk.Label(left, text="What are you working on?").pack(anchor="w")
         self.focus_task = tk.StringVar()
-        ttk.Entry(left, textvariable=self.focus_task, width=32).pack(anchor="w", fill="x", pady=(0, 12))
+        task_row = ttk.Frame(left)
+        task_row.pack(fill="x", pady=(0, 12))
+        ttk.Entry(task_row, textvariable=self.focus_task, width=26).pack(
+            side="left", fill="x", expand=True, padx=(0, 4)
+        )
+        ttk.Button(task_row, text="Set", width=4, command=self._safe_cmd(self._focus_set_task)).pack(side="left")
 
         # --- Timer display ---
         timer_frame = ttk.LabelFrame(left, text="Timer", padding=10)
@@ -2012,8 +2017,13 @@ class ChaosCatcherApp(tk.Tk):
         ttk.Separator(right).pack(fill="x", pady=(0, 8))
         ttk.Label(right, text="Focus Session Log (newest first)", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
 
-        self.focus_list = tk.Listbox(right, height=20)
-        self.focus_list.pack(fill="both", expand=True, pady=8)
+        list_frame = ttk.Frame(right, relief="sunken", borderwidth=1)
+        list_frame.pack(fill="both", expand=True, pady=8)
+        self.focus_list = tk.Listbox(list_frame, height=18, borderwidth=0, highlightthickness=0)
+        _focus_sb = ttk.Scrollbar(list_frame, orient="vertical", command=self.focus_list.yview)
+        self.focus_list.configure(yscrollcommand=_focus_sb.set)
+        _focus_sb.pack(side="right", fill="y")
+        self.focus_list.pack(side="left", fill="both", expand=True)
 
         export_row = ttk.Frame(right)
         export_row.pack(fill="x")
@@ -2155,6 +2165,17 @@ class ChaosCatcherApp(tk.Tk):
         self._focus_update_display()
         self._focus_update_session_display()
         self._refresh_focus_list()
+
+    def _focus_set_task(self) -> None:
+        current = self.focus_task.get().strip()
+        val = simpledialog.askstring(
+            "Set task",
+            "What are you working on?",
+            initialvalue=current,
+            parent=self,
+        )
+        if val is not None:
+            self.focus_task.set(val.strip())
 
     # --- Session logging ---
 
