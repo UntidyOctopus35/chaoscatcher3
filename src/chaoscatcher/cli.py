@@ -985,7 +985,7 @@ def cmd_summary(args: argparse.Namespace) -> None:
 
 
 def main(argv=None) -> None:
-    p = argparse.ArgumentParser(prog="cc", description="ChaosCatcher self-care suite")
+    p = argparse.ArgumentParser(prog="chaos", description="ChaosCatcher self-care suite")
     p.add_argument("--data", default=None, help="Path to data JSON (overrides env/default)")
     p.add_argument("--profile", default=None, help="Profile name (e.g. dev/test)")
     p.add_argument(

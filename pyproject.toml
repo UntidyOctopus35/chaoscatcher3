@@ -1,7 +1,7 @@
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 [project.scripts]
-cc = "chaoscatcher.cli:main"
+chaos = "chaoscatcher.cli:main"
 ccgui = "chaoscatcher.gui:run_gui"
 
 [project]
