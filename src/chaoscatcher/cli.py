@@ -18,6 +18,7 @@ from .timeparse import parse_ts
 # Time helpers
 # -------------------------
 
+
 def _now_local() -> datetime:
     return datetime.now().astimezone()
 
@@ -56,9 +57,13 @@ def _parse_ts(value: str | None) -> str:
             try:
                 dt = datetime.fromisoformat(str(value).strip())
             except Exception as e:
-                raise SystemExit(f"Could not parse --time {value!r} (timeparse returned {dt_any!r})") from e
+                raise SystemExit(
+                    f"Could not parse --time {value!r} (timeparse returned {dt_any!r})"
+                ) from e
     else:
-        raise SystemExit(f"Could not parse --time {value!r} (timeparse returned {type(dt_any).__name__})")
+        raise SystemExit(
+            f"Could not parse --time {value!r} (timeparse returned {type(dt_any).__name__})"
+        )
 
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_now_local().tzinfo)
@@ -80,11 +85,15 @@ def _window_cutoff(window: str) -> tuple[datetime | None, str]:
     now = _now_local()
     if window == "7":
         days = 7
-        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=days - 1
+        )
         return cutoff, "last 7 days"
     if window == "30":
         days = 30
-        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days - 1)
+        cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+            days=days - 1
+        )
         return cutoff, "last 30 days"
     return None, "all time"
 
@@ -92,6 +101,7 @@ def _window_cutoff(window: str) -> tuple[datetime | None, str]:
 # -------------------------
 # Formatting helpers
 # -------------------------
+
 
 def _fmt_time(dt: datetime) -> str:
     # Linux: %-I works; Windows: fallback
@@ -193,13 +203,17 @@ def _parse_minutes(value: str | None, arg_name: str) -> int | None:
             continue
         if ch in (" ",):
             continue
-        raise SystemExit(f"{arg_name} must be minutes, H:MM, or like 7h30m (got {value!r})")
+        raise SystemExit(
+            f"{arg_name} must be minutes, H:MM, or like 7h30m (got {value!r})"
+        )
 
     if num:
         # if they wrote "7" but not digits-only (handled above), treat as error
         if saw_unit:
             raise SystemExit(f"{arg_name}: trailing number without unit in {value!r}")
-        raise SystemExit(f"{arg_name} must be minutes, H:MM, or like 7h30m (got {value!r})")
+        raise SystemExit(
+            f"{arg_name} must be minutes, H:MM, or like 7h30m (got {value!r})"
+        )
 
     return total if saw_unit else None
 
@@ -207,6 +221,7 @@ def _parse_minutes(value: str | None, arg_name: str) -> int | None:
 # -------------------------
 # Print blocks
 # -------------------------
+
 
 def _print_med_block(entry: dict[str, Any]) -> None:
     dt = _dt_from_entry_ts(str(entry.get("ts", "")))
@@ -257,10 +272,12 @@ def _print_mood_block(entry: dict[str, Any]) -> None:
     if tags:
         print(f"- 🏷️ Tags: {', '.join(tags)}")
     if sleep_total is not None or sleep_rem is not None or sleep_deep is not None:
-        print("- 😴 Sleep (minutes): "
-              f"total={sleep_total if sleep_total is not None else '—'}, "
-              f"REM={sleep_rem if sleep_rem is not None else '—'}, "
-              f"deep={sleep_deep if sleep_deep is not None else '—'}")
+        print(
+            "- 😴 Sleep (minutes): "
+            f"total={sleep_total if sleep_total is not None else '—'}, "
+            f"REM={sleep_rem if sleep_rem is not None else '—'}, "
+            f"deep={sleep_deep if sleep_deep is not None else '—'}"
+        )
     if notes:
         print(f"- 📝 Notes: {notes}")
     print("```")
@@ -298,7 +315,9 @@ MOOD_DAILY_CSV_FIELDS = [
 ]
 
 
-def _write_csv(out_path: Path, fieldnames: list[str], rows: list[dict[str, Any]]) -> None:
+def _write_csv(
+    out_path: Path, fieldnames: list[str], rows: list[dict[str, Any]]
+) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames, quoting=csv.QUOTE_MINIMAL)
@@ -310,6 +329,7 @@ def _write_csv(out_path: Path, fieldnames: list[str], rows: list[dict[str, Any]]
 # -------------------------
 # MED commands
 # -------------------------
+
 
 def cmd_med_add(args: argparse.Namespace) -> None:
     data = load_json(args.data_path)
@@ -347,7 +367,7 @@ def cmd_med_list(args: argparse.Namespace) -> None:
 
     print("=== Medication Log (newest first) ===")
     for m in meds_sorted[: args.limit]:
-        line = f"{m.get('ts','')} — {m.get('name','')} {m.get('dose','')}".strip()
+        line = f"{m.get('ts', '')} — {m.get('name', '')} {m.get('dose', '')}".strip()
         if m.get("notes"):
             line += f" ({m['notes']})"
         print(line)
@@ -384,7 +404,7 @@ def cmd_med_today(args: argparse.Namespace) -> None:
     for m in todays_sorted[: args.limit]:
         dt = _dt_from_entry_ts(str(m.get("ts", "")))
         t = _fmt_time(dt) if dt else ""
-        print(f"{t} — {m.get('name','')} {m.get('dose','')}")
+        print(f"{t} — {m.get('name', '')} {m.get('dose', '')}")
 
 
 def cmd_med_stats(args: argparse.Namespace) -> None:
@@ -396,7 +416,9 @@ def cmd_med_stats(args: argparse.Namespace) -> None:
         return
 
     now = _now_local()
-    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=args.days - 1)
+    cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(
+        days=args.days - 1
+    )
 
     counts: dict[str, int] = {}
     hour_counts: dict[int, int] = {}
@@ -414,7 +436,9 @@ def cmd_med_stats(args: argparse.Namespace) -> None:
         print(f"No medication entries found in last {args.days} days.")
         return
 
-    print(f"=== Medication Stats (last {args.days} days, since {cutoff.date().isoformat()}) ===")
+    print(
+        f"=== Medication Stats (last {args.days} days, since {cutoff.date().isoformat()}) ==="
+    )
     print("\n[Counts by medication]")
     for name, c in sorted(counts.items(), key=lambda x: (-x[1], x[0].lower())):
         print(f"- {name}: {c}")
@@ -431,6 +455,7 @@ def cmd_med_stats(args: argparse.Namespace) -> None:
 # -------------------------
 # MOOD commands
 # -------------------------
+
 
 def cmd_mood_add(args: argparse.Namespace) -> None:
     if not (1 <= args.score <= 10):
@@ -536,7 +561,7 @@ def cmd_mood_today(args: argparse.Namespace) -> None:
         dt = _dt_from_entry_ts(str(m.get("ts", "")))
         t = _fmt_time(dt) if dt else ""
         tags = m.get("tags", [])
-        line = f"{t} — {m.get('score','')}/10"
+        line = f"{t} — {m.get('score', '')}/10"
         if tags:
             line += f" [{', '.join(tags)}]"
         st = m.get("sleep_total_min")
@@ -561,7 +586,11 @@ def cmd_mood_reset(args: argparse.Namespace) -> None:
 
 def _mood_key(entry: dict[str, Any]) -> tuple:
     ts = str(entry.get("ts", ""))
-    score = int(entry.get("score", 0)) if isinstance(entry.get("score"), int) else entry.get("score")
+    score = (
+        int(entry.get("score", 0))
+        if isinstance(entry.get("score"), int)
+        else entry.get("score")
+    )
     notes = str(entry.get("notes", "")).strip()
     tags = entry.get("tags", [])
     if not isinstance(tags, list):
@@ -598,7 +627,9 @@ def cmd_mood_dedupe(args: argparse.Namespace) -> None:
         return
 
     if args.dry_run:
-        print(f"🧪 Dedupe dry-run: would remove {removed} duplicates (keep {len(kept)}).")
+        print(
+            f"🧪 Dedupe dry-run: would remove {removed} duplicates (keep {len(kept)})."
+        )
         return
 
     data["moods"] = kept
@@ -868,12 +899,15 @@ def cmd_mood_export_daily(args: argparse.Namespace) -> None:
     if rows:
         print(f"📄 Exported {len(rows)} daily summary rows ({label}) → {out_path}")
     else:
-        print(f"📄 Exported header-only daily summary CSV (no rows for {label}) → {out_path}")
+        print(
+            f"📄 Exported header-only daily summary CSV (no rows for {label}) → {out_path}"
+        )
 
 
 # -------------------------
 # Core commands
 # -------------------------
+
 
 def cmd_init(args: argparse.Namespace) -> None:
     data = load_json(args.data_path)
@@ -966,22 +1000,36 @@ def cmd_summary(args: argparse.Namespace) -> None:
         for m in reversed(todays):
             dt = _dt_from_entry_ts(str(m.get("ts", "")))
             t = _fmt_time(dt) if dt else ""
-            print(f"- {t}: {m.get('name','')} {m.get('dose','')}")
+            print(f"- {t}: {m.get('name', '')} {m.get('dose', '')}")
     else:
         print("No meds logged today.")
 
 
 def main(argv=None) -> None:
     p = argparse.ArgumentParser(prog="cc", description="ChaosCatcher self-care suite")
-    p.add_argument("--data", default=None, help="Path to data JSON (overrides env/default)")
+    p.add_argument(
+        "--data", default=None, help="Path to data JSON (overrides env/default)"
+    )
     p.add_argument("--profile", default=None, help="Profile name (e.g. dev/test)")
-    p.add_argument("--allow-repo-data-path", action="store_true", help="Override safety guard (not recommended)")
+    p.add_argument(
+        "--allow-repo-data-path",
+        action="store_true",
+        help="Override safety guard (not recommended)",
+    )
 
     sub = p.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("init", help="Initialize data store safely").set_defaults(func=cmd_init)
-    sub.add_parser("summary", help="Show summary dashboard").set_defaults(func=cmd_summary)
-    sub.add_parser("where", help="Show which data file is active and why").set_defaults(func=cmd_where)
-    sub.add_parser("doctor", help="Run safety + health checks").set_defaults(func=cmd_doctor)
+    sub.add_parser("init", help="Initialize data store safely").set_defaults(
+        func=cmd_init
+    )
+    sub.add_parser("summary", help="Show summary dashboard").set_defaults(
+        func=cmd_summary
+    )
+    sub.add_parser("where", help="Show which data file is active and why").set_defaults(
+        func=cmd_where
+    )
+    sub.add_parser("doctor", help="Run safety + health checks").set_defaults(
+        func=cmd_doctor
+    )
 
     # ---- med ----
     med = sub.add_parser("med", help="Medication logging")
@@ -990,7 +1038,9 @@ def main(argv=None) -> None:
     med_add = med_sub.add_parser("add", help="Add medication entry")
     med_add.add_argument("--name", required=True)
     med_add.add_argument("--dose", required=True)
-    med_add.add_argument("--time", default=None, help="ISO, human, or relative (e.g. today 9am)")
+    med_add.add_argument(
+        "--time", default=None, help="ISO, human, or relative (e.g. today 9am)"
+    )
     med_add.add_argument("--notes", default=None)
     med_add.add_argument("--format", choices=["line", "block"], default="line")
     med_add.set_defaults(func=cmd_med_add)
@@ -1005,8 +1055,12 @@ def main(argv=None) -> None:
     med_today.add_argument("--format", choices=["line", "block"], default="line")
     med_today.set_defaults(func=cmd_med_today)
 
-    med_stats = med_sub.add_parser("stats", help="Basic stats for recent medication logs")
-    med_stats.add_argument("--days", type=int, default=14, help="Lookback window (days)")
+    med_stats = med_sub.add_parser(
+        "stats", help="Basic stats for recent medication logs"
+    )
+    med_stats.add_argument(
+        "--days", type=int, default=14, help="Lookback window (days)"
+    )
     med_stats.set_defaults(func=cmd_med_stats)
 
     # ---- mood ----
@@ -1015,15 +1069,35 @@ def main(argv=None) -> None:
 
     mood_add = mood_sub.add_parser("add", help="Add mood entry (1–10)")
     mood_add.add_argument("--score", type=int, required=True, help="Mood score 1–10")
-    mood_add.add_argument("--time", default=None, help="ISO, human, or relative (e.g. today 9am, 3 days ago)")
+    mood_add.add_argument(
+        "--time",
+        default=None,
+        help="ISO, human, or relative (e.g. today 9am, 3 days ago)",
+    )
     mood_add.add_argument("--notes", default=None)
-    mood_add.add_argument("--tags", default=None, help="Comma or space-separated tags (e.g. baseline,school)")
-    mood_add.add_argument("--sleep-total", dest="sleep_total", default=None,
-                          help="Total sleep (minutes, H:MM like 7:30, or 7h30m)")
-    mood_add.add_argument("--sleep-rem", dest="sleep_rem", default=None,
-                          help="REM sleep (minutes, H:MM, or 1h15m)")
-    mood_add.add_argument("--sleep-deep", dest="sleep_deep", default=None,
-                          help="Deep sleep (minutes, H:MM, or 0h45m)")
+    mood_add.add_argument(
+        "--tags",
+        default=None,
+        help="Comma or space-separated tags (e.g. baseline,school)",
+    )
+    mood_add.add_argument(
+        "--sleep-total",
+        dest="sleep_total",
+        default=None,
+        help="Total sleep (minutes, H:MM like 7:30, or 7h30m)",
+    )
+    mood_add.add_argument(
+        "--sleep-rem",
+        dest="sleep_rem",
+        default=None,
+        help="REM sleep (minutes, H:MM, or 1h15m)",
+    )
+    mood_add.add_argument(
+        "--sleep-deep",
+        dest="sleep_deep",
+        default=None,
+        help="Deep sleep (minutes, H:MM, or 0h45m)",
+    )
     mood_add.add_argument("--format", choices=["line", "block"], default="line")
     mood_add.set_defaults(func=cmd_mood_add)
 
@@ -1038,30 +1112,62 @@ def main(argv=None) -> None:
     mood_today.set_defaults(func=cmd_mood_today)
 
     mood_stats = mood_sub.add_parser("stats", help="Mood stats + trend over time")
-    mood_stats.add_argument("--window", choices=["7", "30", "all"], default="7",
-                            help="Time window for analysis: 7, 30, or all")
-    mood_stats.add_argument("--trend-epsilon", type=float, default=0.05,
-                            help="Trend sensitivity in mood points/day (default 0.05)")
+    mood_stats.add_argument(
+        "--window",
+        choices=["7", "30", "all"],
+        default="7",
+        help="Time window for analysis: 7, 30, or all",
+    )
+    mood_stats.add_argument(
+        "--trend-epsilon",
+        type=float,
+        default=0.05,
+        help="Trend sensitivity in mood points/day (default 0.05)",
+    )
     mood_stats.set_defaults(func=cmd_mood_stats)
 
-    mood_export = mood_sub.add_parser("export", help="Export mood entries to a clinician-friendly CSV")
-    mood_export.add_argument("--csv", required=True, help="Output CSV path (e.g. ~/moods.csv)")
-    mood_export.add_argument("--window", choices=["7", "30", "all"], default="30",
-                             help="Time window for export: 7, 30, or all (default 30)")
+    mood_export = mood_sub.add_parser(
+        "export", help="Export mood entries to a clinician-friendly CSV"
+    )
+    mood_export.add_argument(
+        "--csv", required=True, help="Output CSV path (e.g. ~/moods.csv)"
+    )
+    mood_export.add_argument(
+        "--window",
+        choices=["7", "30", "all"],
+        default="30",
+        help="Time window for export: 7, 30, or all (default 30)",
+    )
     mood_export.set_defaults(func=cmd_mood_export)
 
-    mood_export_daily = mood_sub.add_parser("export-daily", help="Export daily mood summary CSV (avg/min/max)")
-    mood_export_daily.add_argument("--csv", required=True, help="Output CSV path (e.g. ~/moods_daily.csv)")
-    mood_export_daily.add_argument("--window", choices=["7", "30", "all"], default="30",
-                                   help="Time window for export: 7, 30, or all (default 30)")
+    mood_export_daily = mood_sub.add_parser(
+        "export-daily", help="Export daily mood summary CSV (avg/min/max)"
+    )
+    mood_export_daily.add_argument(
+        "--csv", required=True, help="Output CSV path (e.g. ~/moods_daily.csv)"
+    )
+    mood_export_daily.add_argument(
+        "--window",
+        choices=["7", "30", "all"],
+        default="30",
+        help="Time window for export: 7, 30, or all (default 30)",
+    )
     mood_export_daily.set_defaults(func=cmd_mood_export_daily)
 
-    mood_reset = mood_sub.add_parser("reset", help="Delete ALL mood entries (requires --yes)")
-    mood_reset.add_argument("--yes", action="store_true", help="Confirm destructive reset")
+    mood_reset = mood_sub.add_parser(
+        "reset", help="Delete ALL mood entries (requires --yes)"
+    )
+    mood_reset.add_argument(
+        "--yes", action="store_true", help="Confirm destructive reset"
+    )
     mood_reset.set_defaults(func=cmd_mood_reset)
 
-    mood_dedupe = mood_sub.add_parser("dedupe", help="Remove exact duplicate mood entries")
-    mood_dedupe.add_argument("--dry-run", action="store_true", help="Show what would happen without writing")
+    mood_dedupe = mood_sub.add_parser(
+        "dedupe", help="Remove exact duplicate mood entries"
+    )
+    mood_dedupe.add_argument(
+        "--dry-run", action="store_true", help="Show what would happen without writing"
+    )
     mood_dedupe.set_defaults(func=cmd_mood_dedupe)
 
     args = p.parse_args(argv)
