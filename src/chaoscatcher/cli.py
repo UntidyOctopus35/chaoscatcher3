@@ -29,38 +29,10 @@ def _parse_ts(value: str | None) -> str:
     - None -> now
     - accepts ISO, human, and relative formats implemented in parse_ts
     Returns ISO string with local timezone.
-
-    Defensive: parse_ts MUST ideally return a datetime, but if it returns a
-    string (or something else), we try to coerce safely.
     """
     if not value:
         return _now_iso()
-
-    dt_any = parse_ts(value)
-
-    # Ideal path: datetime returned
-    if isinstance(dt_any, datetime):
-        dt = dt_any
-    # If timeparse returns ISO string or similar, attempt to parse
-    elif isinstance(dt_any, str):
-        s = dt_any.strip()
-        # Try ISO first
-        try:
-            dt = datetime.fromisoformat(s)
-        except Exception:
-            # Last resort: try parsing the ORIGINAL input as ISO
-            # (keeps error messages more intuitive)
-            try:
-                dt = datetime.fromisoformat(str(value).strip())
-            except Exception as e:
-                raise SystemExit(f"Could not parse --time {value!r} (timeparse returned {dt_any!r})") from e
-    else:
-        raise SystemExit(f"Could not parse --time {value!r} (timeparse returned {type(dt_any).__name__})")
-
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_now_local().tzinfo)
-
-    return dt.astimezone().isoformat(timespec="seconds")
+    return parse_ts(value)
 
 
 def _window_cutoff(window: str) -> tuple[datetime | None, str]:
@@ -322,7 +294,7 @@ def cmd_med_list(args: argparse.Namespace) -> None:
         print("No medication entries yet.")
         return
 
-    meds_sorted = list(reversed(meds))  # newest first
+    meds_sorted = sorted(meds, key=lambda m: str(m.get("ts", "")), reverse=True)
 
     if args.format == "block":
         for m in meds_sorted[: args.limit]:
@@ -357,7 +329,7 @@ def cmd_med_today(args: argparse.Namespace) -> None:
         print("No medication entries logged today.")
         return
 
-    todays_sorted = list(reversed(todays))  # newest first
+    todays_sorted = sorted(todays, key=lambda m: str(m.get("ts", "")), reverse=True)
 
     if args.format == "block":
         for m in todays_sorted[: args.limit]:
@@ -368,7 +340,10 @@ def cmd_med_today(args: argparse.Namespace) -> None:
     for m in todays_sorted[: args.limit]:
         dt = _dt_from_entry_ts(str(m.get("ts", "")))
         t = _fmt_time(dt) if dt else ""
-        print(f"{t} — {m.get('name', '')} {m.get('dose', '')}")
+        line = f"{t} — {m.get('name', '')} {m.get('dose', '')}"
+        if m.get("notes"):
+            line += f" ({m['notes']})"
+        print(line)
 
 
 def cmd_med_stats(args: argparse.Namespace) -> None:
@@ -463,7 +438,7 @@ def cmd_mood_list(args: argparse.Namespace) -> None:
         print("No mood entries yet.")
         return
 
-    moods_sorted = list(reversed(moods))  # newest first
+    moods_sorted = sorted(moods, key=lambda m: str(m.get("ts", "")), reverse=True)
 
     if args.format == "block":
         for m in moods_sorted[: args.limit]:
@@ -512,7 +487,7 @@ def cmd_mood_today(args: argparse.Namespace) -> None:
         print("No mood entries logged today.")
         return
 
-    todays_sorted = list(reversed(todays))  # newest first
+    todays_sorted = sorted(todays, key=lambda m: str(m.get("ts", "")), reverse=True)
 
     if args.format == "block":
         for m in todays_sorted[: args.limit]:
@@ -524,9 +499,12 @@ def cmd_mood_today(args: argparse.Namespace) -> None:
         dt = _dt_from_entry_ts(str(m.get("ts", "")))
         t = _fmt_time(dt) if dt else ""
         tags = m.get("tags", [])
+        notes = m.get("notes")
         line = f"{t} — {m.get('score', '')}/10"
         if tags:
             line += f" [{', '.join(tags)}]"
+        if notes:
+            line += f" ({notes})"
         st = m.get("sleep_total_min")
         sr = m.get("sleep_rem_min")
         sd = m.get("sleep_deep_min")
