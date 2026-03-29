@@ -1,11 +1,50 @@
 # ChaosCatcher
+ChaosCatcher
+
+ChaosCatcher is a regulation-centered self-care logging tool designed to make invisible nervous-system patterns visible.
+
+It tracks mood, medication timing, sleep, hydration, and body signals locally so users can notice drift, overload, and recovery trends early—before they become crises.
+
+ChaosCatcher is not a productivity tracker.
+It is a nervous-system awareness tool.
+
+The goal is clarity, stability, and self-understanding—not optimization, streaks, or performance metrics.
+
+Why this exists
+
+Many tracking apps optimize for engagement or behavior change.
+ChaosCatcher exists to support:
+
+pattern recognition instead of judgment
+regulation instead of productivity
+awareness instead of compliance
+autonomy instead of surveillance
+
+All data stays local by default.
+
+License and intent
+
+ChaosCatcher is released under the PolyForm Noncommercial License 1.0.0.
+
+You may:
+
+use it
+study it
+modify it
+share it
+build on it for personal, educational, or research purposes
+
+You may not use ChaosCatcher or derivatives commercially.
+
+This boundary exists to preserve the project’s purpose as a regulation-centered tool rather than a monetized behavioral product.
+
+What ChaosCatcher tracks
+
+Tracks mood, medication, sleep, and water intake in a local JSON file. Includes a CLI (chaos) and a desktop GUI (ccgui).
 Regulation-centered self-care logging tool.
 
-Tracks mood, medication, sleep, and water intake in a local JSON file. Includes a CLI (`chaos`) and a desktop GUI (`ccgui`).
 
-## Installation
-
-```bash
+## Installion
 git clone https://github.com/UntidyOctopus35/chaoscatcher3.git
 cd chaoscatcher3
 python -m venv .venv
